@@ -238,7 +238,23 @@ class SDNRestController(ControllerBase):
             status=status,
             content_type="application/json",
             charset="utf-8",
-            body=json.dumps(data).encode("utf-8")
+            body=json.dumps(data).encode("utf-8"),
+            headers=[
+                ("Access-Control-Allow-Origin", "*"),
+                ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
+                ("Access-Control-Allow-Headers", "Content-Type, Accept")
+            ]
+        )
+
+    def cors_preflight(self):
+        return Response(
+            status=200,
+            headers=[
+                ("Access-Control-Allow-Origin", "*"),
+                ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
+                ("Access-Control-Allow-Headers", "Content-Type, Accept"),
+                ("Content-Length", "0")
+            ]
         )
 
     def read_json_body(self, req):
@@ -246,8 +262,11 @@ class SDNRestController(ControllerBase):
             return {}
         return json.loads(req.body.decode("utf-8"))
 
-    @route("topology", "/api/topology", methods=["GET"])
+    @route("topology", "/api/topology", methods=["GET", "OPTIONS"])
     def get_topology(self, req, **kwargs):
+        if req.method == "OPTIONS":
+            return self.cors_preflight()
+
         try:
             body = self.sdn_app.get_topology_data()
             return self.json_response(body)
@@ -257,8 +276,11 @@ class SDNRestController(ControllerBase):
                 "error": str(e)
             }, status=500)
 
-    @route("disable_link", "/api/links/disable", methods=["POST"])
+    @route("disable_link", "/api/links/disable", methods=["POST", "OPTIONS"])
     def disable_link(self, req, **kwargs):
+        if req.method == "OPTIONS":
+            return self.cors_preflight()
+
         try:
             body = self.read_json_body(req)
             result = self.sdn_app.disable_link(body["src"], body["dst"])
@@ -273,8 +295,11 @@ class SDNRestController(ControllerBase):
                 "error": str(e)
             }, status=400)
 
-    @route("enable_link", "/api/links/enable", methods=["POST"])
+    @route("enable_link", "/api/links/enable", methods=["POST", "OPTIONS"])
     def enable_link(self, req, **kwargs):
+        if req.method == "OPTIONS":
+            return self.cors_preflight()
+
         try:
             body = self.read_json_body(req)
             result = self.sdn_app.enable_link(body["src"], body["dst"])

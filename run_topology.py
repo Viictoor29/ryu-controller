@@ -2,7 +2,7 @@
 
 import argparse
 import importlib
-import os
+
 import sys
 
 from mininet.net import Mininet
@@ -78,9 +78,6 @@ def run():
     )
 
     args = parser.parse_args()
-
-    if not args.skip_clean:
-        os.system("mn -c > /dev/null 2>&1")
 
     topo = load_topology(args.module, args.topo)
 
