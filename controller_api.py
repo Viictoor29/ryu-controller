@@ -29,6 +29,17 @@ class SDNControllerAPI(app_manager.RyuApp):
         # Guarda los switches conectados para poder enviar PortMod
         self.datapaths = {}
 
+        # Inventario completo de enlaces switch-switch
+        # clave: link_key canónica
+        # valor: {
+        #   "source": "...",
+        #   "target": "...",
+        #   "src_port": n,
+        #   "dst_port": n,
+        #   "enabled": True/False
+        # }
+        self.links_inventory = {}
+
     @set_ev_cls(ofp_event.EventOFPStateChange, [MAIN_DISPATCHER, DEAD_DISPATCHER])
     def state_change_handler(self, ev):
         datapath = ev.datapath
@@ -44,6 +55,56 @@ class SDNControllerAPI(app_manager.RyuApp):
             if datapath.id in self.datapaths:
                 del self.datapaths[datapath.id]
                 self.logger.info("Switch desconectado: %s", datapath.id)
+
+    def make_link_key(self, src_dpid, src_port, dst_dpid, dst_port):
+        a = (str(src_dpid), int(src_port))
+        b = (str(dst_dpid), int(dst_port))
+        return tuple(sorted([a, b]))
+
+    def sync_links_inventory(self):
+        """
+        Sincroniza el inventario con los enlaces actualmente descubiertos por Ryu.
+        Los enlaces que aparezcan en get_link() se marcan como enabled=True.
+        Los que no aparezcan NO se borran, para poder seguir mostrándolos si fueron desactivados.
+        """
+        links = get_link(self, None)
+
+        for link in links:
+            src_dpid = str(link.src.dpid)
+            dst_dpid = str(link.dst.dpid)
+            src_port = int(link.src.port_no)
+            dst_port = int(link.dst.port_no)
+
+            key = self.make_link_key(src_dpid, src_port, dst_dpid, dst_port)
+
+            if key not in self.links_inventory:
+                self.links_inventory[key] = {
+                    "source": src_dpid,
+                    "target": dst_dpid,
+                    "src_port": src_port,
+                    "dst_port": dst_port,
+                    "enabled": True
+                }
+            else:
+                self.links_inventory[key]["enabled"] = True
+
+    def set_link_inventory_state(self, src, dst, enabled):
+        key = self.make_link_key(
+            src["dpid"], src["port_no"],
+            dst["dpid"], dst["port_no"]
+        )
+
+        if key in self.links_inventory:
+            self.links_inventory[key]["enabled"] = enabled
+        else:
+            # Si no estaba aún en inventario, lo añadimos
+            self.links_inventory[key] = {
+                "source": str(src["dpid"]),
+                "target": str(dst["dpid"]),
+                "src_port": int(src["port_no"]),
+                "dst_port": int(dst["port_no"]),
+                "enabled": enabled
+            }
 
     def set_port_state(self, dpid, port_no, up=True):
         dpid = int(dpid)
@@ -86,6 +147,8 @@ class SDNControllerAPI(app_manager.RyuApp):
         result_src = self.set_port_state(src["dpid"], src["port_no"], up=False)
         result_dst = self.set_port_state(dst["dpid"], dst["port_no"], up=False)
 
+        self.set_link_inventory_state(src, dst, enabled=False)
+
         return {
             "src": result_src,
             "dst": result_dst,
@@ -96,6 +159,8 @@ class SDNControllerAPI(app_manager.RyuApp):
         result_src = self.set_port_state(src["dpid"], src["port_no"], up=True)
         result_dst = self.set_port_state(dst["dpid"], dst["port_no"], up=True)
 
+        self.set_link_inventory_state(src, dst, enabled=True)
+
         return {
             "src": result_src,
             "dst": result_dst,
@@ -103,56 +168,55 @@ class SDNControllerAPI(app_manager.RyuApp):
         }
 
     def get_topology_data(self):
+        # Primero sincronizamos los enlaces activos descubiertos
+        self.sync_links_inventory()
+
         switches = get_switch(self, None)
-        links = get_link(self, None)
         hosts = get_host(self, None)
 
         nodes = []
         edges = []
+        seen_nodes = set()
 
         # switches
         for sw in switches:
-            nodes.append({
-                "id": str(sw.dp.id),
-                "type": "switch"
-            })
+            sw_id = str(sw.dp.id)
+            if sw_id not in seen_nodes:
+                nodes.append({
+                    "id": sw_id,
+                    "type": "switch"
+                })
+                seen_nodes.add(sw_id)
 
         # hosts + enlace host-switch
         for host in hosts:
             host_id = str(host.mac)
             switch_id = str(host.port.dpid)
 
-            nodes.append({
-                "id": host_id,
-                "type": "host"
-            })
+            if host_id not in seen_nodes:
+                nodes.append({
+                    "id": host_id,
+                    "type": "host"
+                })
+                seen_nodes.add(host_id)
 
             edges.append({
                 "source": host_id,
                 "target": switch_id,
                 "type": "host-link",
-                "port": host.port.port_no
+                "port": int(host.port.port_no),
+                "enabled": True
             })
 
-        # enlaces switch-switch sin duplicados
-        seen_links = set()
-
-        for link in links:
-            src = str(link.src.dpid)
-            dst = str(link.dst.dpid)
-
-            link_key = tuple(sorted([src, dst]))
-            if link_key in seen_links:
-                continue
-
-            seen_links.add(link_key)
-
+        # enlaces switch-switch desde inventario completo
+        for link in self.links_inventory.values():
             edges.append({
-                "source": src,
-                "target": dst,
+                "source": link["source"],
+                "target": link["target"],
                 "type": "switch-link",
-                "src_port": link.src.port_no,
-                "dst_port": link.dst.port_no
+                "src_port": int(link["src_port"]),
+                "dst_port": int(link["dst_port"]),
+                "enabled": bool(link["enabled"])
             })
 
         return {
@@ -221,4 +285,3 @@ class SDNRestController(ControllerBase):
                 "ok": False,
                 "error": str(e)
             }, status=400)
-        
