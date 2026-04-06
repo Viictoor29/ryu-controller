@@ -196,7 +196,10 @@ class SDNControllerAPI(app_manager.RyuApp):
             if host_id not in seen_nodes:
                 nodes.append({
                     "id": host_id,
-                    "type": "host"
+                    "type": "host",
+                    "mac": str(host.mac),
+                    "ipv4": list(host.ipv4) if hasattr(host, "ipv4") else [],
+                    "ipv6": list(host.ipv6) if hasattr(host, "ipv6") else []
                 })
                 seen_nodes.add(host_id)
 
