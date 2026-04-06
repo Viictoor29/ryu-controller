@@ -6,6 +6,8 @@ from ryu.app.wsgi import WSGIApplication, ControllerBase, route
 from webob import Response
 from ryu.topology.api import get_switch, get_link, get_host
 import json
+import subprocess
+import re
 
 
 API_INSTANCE_NAME = "sdn_api_app"
@@ -26,18 +28,7 @@ class SDNControllerAPI(app_manager.RyuApp):
             API_INSTANCE_NAME: self
         })
 
-        # Guarda los switches conectados para poder enviar PortMod
         self.datapaths = {}
-
-        # Inventario completo de enlaces switch-switch
-        # clave: link_key canónica
-        # valor: {
-        #   "source": "...",
-        #   "target": "...",
-        #   "src_port": n,
-        #   "dst_port": n,
-        #   "enabled": True/False
-        # }
         self.links_inventory = {}
 
     @set_ev_cls(ofp_event.EventOFPStateChange, [MAIN_DISPATCHER, DEAD_DISPATCHER])
@@ -63,9 +54,10 @@ class SDNControllerAPI(app_manager.RyuApp):
 
     def sync_links_inventory(self):
         """
-        Sincroniza el inventario con los enlaces actualmente descubiertos por Ryu.
-        Los enlaces que aparezcan en get_link() se marcan como enabled=True.
-        Los que no aparezcan NO se borran, para poder seguir mostrándolos si fueron desactivados.
+        Sincroniza el inventario con los enlaces descubiertos por Ryu.
+        Los enlaces detectados se marcan como enabled=True.
+        Los que desaparecen no se borran para poder seguir mostrándolos
+        si han sido deshabilitados.
         """
         links = get_link(self, None)
 
@@ -97,7 +89,6 @@ class SDNControllerAPI(app_manager.RyuApp):
         if key in self.links_inventory:
             self.links_inventory[key]["enabled"] = enabled
         else:
-            # Si no estaba aún en inventario, lo añadimos
             self.links_inventory[key] = {
                 "source": str(src["dpid"]),
                 "target": str(dst["dpid"]),
@@ -117,13 +108,10 @@ class SDNControllerAPI(app_manager.RyuApp):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
 
-        # Buscar el puerto en el switch
         port = datapath.ports.get(port_no)
         if port is None:
             raise ValueError(f"No se encontró el puerto {port_no} en el switch {dpid}")
 
-        # up=True => quitar PORT_DOWN
-        # up=False => poner PORT_DOWN
         config = 0 if up else ofproto.OFPPC_PORT_DOWN
         mask = ofproto.OFPPC_PORT_DOWN
 
@@ -167,8 +155,68 @@ class SDNControllerAPI(app_manager.RyuApp):
             "link_state": "enabled"
         }
 
+    def get_interface_name(self, dpid, port_no):
+        """
+        Convierte dpid+puerto en nombre de interfaz Mininet.
+        Ejemplo: dpid=1, port=2 -> s1-eth2
+        """
+        return f"s{int(dpid)}-eth{int(port_no)}"
+
+    def run_command(self, cmd):
+        try:
+            completed = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False
+            )
+            return completed.returncode, completed.stdout.strip(), completed.stderr.strip()
+        except Exception as e:
+            return 1, "", str(e)
+
+    def get_interface_tc_state(self, iface):
+        """
+        Lee el estado real de tc en una interfaz:
+        - delay
+        - loss
+        - bandwidth
+
+        Devuelve None en un campo si no hay nada aplicado o no se pudo detectar.
+        """
+        result = {
+            "delay": None,
+            "loss": None,
+            "bandwidth": None
+        }
+
+        rc, qdisc_out, _ = self.run_command(["sudo", "tc", "qdisc", "show", "dev", iface])
+        if rc == 0 and qdisc_out:
+            delay_match = re.search(r"\bdelay\s+([0-9]+(?:\.[0-9]+)?[a-zA-Z]+)\b", qdisc_out)
+            if delay_match:
+                result["delay"] = delay_match.group(1)
+
+            loss_match = re.search(r"\bloss\s+([0-9]+(?:\.[0-9]+)?)%\b", qdisc_out)
+            if loss_match:
+                try:
+                    result["loss"] = float(loss_match.group(1))
+                except ValueError:
+                    result["loss"] = loss_match.group(1)
+
+            # Algunos qdisc muestran rate aquí
+            bw_match_qdisc = re.search(r"\brate\s+([0-9]+(?:\.[0-9]+)?[KMG]bit)\b", qdisc_out)
+            if bw_match_qdisc:
+                result["bandwidth"] = bw_match_qdisc.group(1)
+
+        rc, class_out, _ = self.run_command(["sudo", "tc", "class", "show", "dev", iface])
+        if rc == 0 and class_out:
+            bw_match_class = re.search(r"\brate\s+([0-9]+(?:\.[0-9]+)?[KMG]bit)\b", class_out)
+            if bw_match_class:
+                result["bandwidth"] = bw_match_class.group(1)
+
+        return result
+
     def get_topology_data(self):
-        # Primero sincronizamos los enlaces activos descubiertos
         self.sync_links_inventory()
 
         switches = get_switch(self, None)
@@ -178,7 +226,6 @@ class SDNControllerAPI(app_manager.RyuApp):
         edges = []
         seen_nodes = set()
 
-        # switches
         for sw in switches:
             sw_id = str(sw.dp.id)
             if sw_id not in seen_nodes:
@@ -188,7 +235,6 @@ class SDNControllerAPI(app_manager.RyuApp):
                 })
                 seen_nodes.add(sw_id)
 
-        # hosts + enlace host-switch
         for host in hosts:
             host_id = str(host.mac)
             switch_id = str(host.port.dpid)
@@ -211,15 +257,29 @@ class SDNControllerAPI(app_manager.RyuApp):
                 "enabled": True
             })
 
-        # enlaces switch-switch desde inventario completo
         for link in self.links_inventory.values():
+            src_iface = self.get_interface_name(link["source"], link["src_port"])
+            dst_iface = self.get_interface_name(link["target"], link["dst_port"])
+
+            src_tc = self.get_interface_tc_state(src_iface)
+            dst_tc = self.get_interface_tc_state(dst_iface)
+
+            # Se devuelve el estado observado en ambos extremos.
+            # También se deja un resumen principal tomando el extremo src.
             edges.append({
                 "source": link["source"],
                 "target": link["target"],
                 "type": "switch-link",
                 "src_port": int(link["src_port"]),
                 "dst_port": int(link["dst_port"]),
-                "enabled": bool(link["enabled"])
+                "src_iface": src_iface,
+                "dst_iface": dst_iface,
+                "enabled": bool(link["enabled"]),
+                "delay": src_tc["delay"],
+                "loss": src_tc["loss"],
+                "bandwidth": src_tc["bandwidth"],
+                "src_tc": src_tc,
+                "dst_tc": dst_tc
             })
 
         return {
