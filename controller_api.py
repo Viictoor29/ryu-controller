@@ -273,8 +273,6 @@ class SDNControllerAPI(app_manager.RyuApp):
                 "delay": src_tc["delay"],
                 "loss": src_tc["loss"],
                 "bandwidth": src_tc["bandwidth"],
-                "src_tc": src_tc,
-                "dst_tc": dst_tc
             })
 
         return {
