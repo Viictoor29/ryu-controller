@@ -8,6 +8,8 @@ from ryu.topology.api import get_switch, get_link, get_host
 import json
 import subprocess
 import re
+import time
+import platform
 
 
 API_INSTANCE_NAME = "sdn_api_app"
@@ -30,6 +32,7 @@ class SDNControllerAPI(app_manager.RyuApp):
 
         self.datapaths = {}
         self.links_inventory = {}
+        self.start_time = time.time()
 
     @set_ev_cls(ofp_event.EventOFPStateChange, [MAIN_DISPATCHER, DEAD_DISPATCHER])
     def state_change_handler(self, ev):
@@ -512,6 +515,23 @@ class SDNControllerAPI(app_manager.RyuApp):
             },
             "link_state": "tc_cleared"
         }
+    
+    def get_controller_status(self):
+        self.sync_links_inventory()
+
+        switches = get_switch(self, None)
+        hosts = get_host(self, None)
+
+        uptime_seconds = int(time.time() - self.start_time)
+
+        return {
+            "controller": {
+                "name": "Ryu SDN Controller",
+                "status": "running",
+                "uptime_seconds": uptime_seconds,
+                "ofp_versions": self.OFP_VERSIONS,
+            }
+        }
 
 class SDNRestController(ControllerBase):
     def __init__(self, req, link, data, **config):
@@ -689,4 +709,20 @@ class SDNRestController(ControllerBase):
                 "ok": False,
                 "error": str(e)
             }, status=400)
-        
+
+    @route("controller_status", "/api/controller/status", methods=["GET", "OPTIONS"])
+    def get_controller_status(self, req, **kwargs):
+        if req.method == "OPTIONS":
+            return self.cors_preflight()
+
+        try:
+            body = self.sdn_app.get_controller_status()
+            return self.json_response({
+                "ok": True,
+                "data": body
+            })
+        except Exception as e:
+            return self.json_response({
+                "ok": False,
+                "error": str(e)
+            }, status=500)
