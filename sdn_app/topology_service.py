@@ -1,4 +1,5 @@
 import time
+from ryu.topology.api import get_switch, get_link, get_host
 
 
 class TopologyService:
@@ -24,8 +25,36 @@ class TopologyService:
         }
 
     def sync_links_inventory(self):
-        # Versión segura: no usa get_link() por ahora
-        return
+        """
+        Sincroniza el inventario con los enlaces descubiertos por Ryu.
+        No borra enlaces antiguos para poder seguir mostrando enlaces
+        deshabilitados manualmente.
+        """
+        for key in list(self.links_inventory.keys()):
+            self.links_inventory[key]["discovered"] = False
+
+        links = get_link(self.app, None)
+
+        for link in links:
+            src_dpid = str(link.src.dpid)
+            dst_dpid = str(link.dst.dpid)
+            src_port = int(link.src.port_no)
+            dst_port = int(link.dst.port_no)
+
+            key = self.make_link_key(src_dpid, src_port, dst_dpid, dst_port)
+
+            if key not in self.links_inventory:
+                self.links_inventory[key] = {
+                    "source": src_dpid,
+                    "target": dst_dpid,
+                    "src_port": src_port,
+                    "dst_port": dst_port,
+                    "enabled": True,
+                    "discovered": True
+                }
+            else:
+                self.links_inventory[key]["enabled"] = True
+                self.links_inventory[key]["discovered"] = True
 
     def set_link_inventory_state(self, src, dst, enabled):
         src = self.normalize_endpoint(src, "src")
@@ -113,6 +142,9 @@ class TopologyService:
         }
 
     def get_controller_status(self):
+        """
+        Endpoint ligero y seguro: no usa get_switch/get_link/get_host.
+        """
         uptime_seconds = int(time.time() - self.app.start_time)
 
         return {
@@ -134,11 +166,54 @@ class TopologyService:
     def get_topology_data(self):
         nodes = []
         edges = []
+        seen_nodes = set()
 
+        # Switches conectados al controlador
         for dpid in sorted(self.app.datapaths.keys()):
-            nodes.append({
-                "id": str(dpid),
-                "type": "switch"
+            sw_id = str(dpid)
+            if sw_id not in seen_nodes:
+                nodes.append({
+                    "id": sw_id,
+                    "type": "switch"
+                })
+                seen_nodes.add(sw_id)
+
+        # Links descubiertos por Ryu
+        try:
+            links = get_link(self.app, None)
+        except Exception as e:
+            self.app.logger.exception("Error obteniendo links con get_link(): %s", e)
+            links = []
+
+        self.links_inventory = {}
+
+        for link in links:
+            src_dpid = str(link.src.dpid)
+            dst_dpid = str(link.dst.dpid)
+            src_port = int(link.src.port_no)
+            dst_port = int(link.dst.port_no)
+
+            key = self.make_link_key(src_dpid, src_port, dst_dpid, dst_port)
+
+            if key not in self.links_inventory:
+                self.links_inventory[key] = {
+                    "source": src_dpid,
+                    "target": dst_dpid,
+                    "src_port": src_port,
+                    "dst_port": dst_port,
+                    "enabled": True,
+                    "discovered": True
+                }
+
+        for link in self.links_inventory.values():
+            edges.append({
+                "source": link["source"],
+                "target": link["target"],
+                "type": "switch-link",
+                "src_port": int(link["src_port"]),
+                "dst_port": int(link["dst_port"]),
+                "enabled": bool(link["enabled"]),
+                "discovered": bool(link.get("discovered", False))
             })
 
         return {
