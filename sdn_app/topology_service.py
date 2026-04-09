@@ -1,4 +1,4 @@
-from ryu.topology.api import get_switch, get_link, get_host
+import time
 
 
 class TopologyService:
@@ -11,48 +11,40 @@ class TopologyService:
         b = (str(dst_dpid), int(dst_port))
         return tuple(sorted([a, b]))
 
+    def normalize_endpoint(self, endpoint, name="endpoint"):
+        if not isinstance(endpoint, dict):
+            raise ValueError(f"{name} debe ser un objeto JSON")
+
+        if "dpid" not in endpoint or "port_no" not in endpoint:
+            raise ValueError(f"{name} debe incluir 'dpid' y 'port_no'")
+
+        return {
+            "dpid": str(endpoint["dpid"]),
+            "port_no": int(endpoint["port_no"])
+        }
+
     def sync_links_inventory(self):
-        for key in self.links_inventory:
-            self.links_inventory[key]["discovered"] = False
-
-        links = get_link(self.app, None)
-
-        for link in links:
-            src_dpid = str(link.src.dpid)
-            dst_dpid = str(link.dst.dpid)
-            src_port = int(link.src.port_no)
-            dst_port = int(link.dst.port_no)
-
-            key = self.make_link_key(src_dpid, src_port, dst_dpid, dst_port)
-
-            if key not in self.links_inventory:
-                self.links_inventory[key] = {
-                    "source": src_dpid,
-                    "target": dst_dpid,
-                    "src_port": src_port,
-                    "dst_port": dst_port,
-                    "enabled": True,
-                    "discovered": True
-                }
-            else:
-                self.links_inventory[key]["enabled"] = True
-                self.links_inventory[key]["discovered"] = True
+        # Versión segura: no usa get_link() por ahora
+        return
 
     def set_link_inventory_state(self, src, dst, enabled):
+        src = self.normalize_endpoint(src, "src")
+        dst = self.normalize_endpoint(dst, "dst")
+
         key = self.make_link_key(
             src["dpid"], src["port_no"],
             dst["dpid"], dst["port_no"]
         )
 
         if key in self.links_inventory:
-            self.links_inventory[key]["enabled"] = enabled
+            self.links_inventory[key]["enabled"] = bool(enabled)
         else:
             self.links_inventory[key] = {
-                "source": str(src["dpid"]),
-                "target": str(dst["dpid"]),
-                "src_port": int(src["port_no"]),
-                "dst_port": int(dst["port_no"]),
-                "enabled": enabled,
+                "source": src["dpid"],
+                "target": dst["dpid"],
+                "src_port": src["port_no"],
+                "dst_port": dst["port_no"],
+                "enabled": bool(enabled),
                 "discovered": False
             }
 
@@ -91,6 +83,9 @@ class TopologyService:
         }
 
     def disable_link(self, src, dst):
+        src = self.normalize_endpoint(src, "src")
+        dst = self.normalize_endpoint(dst, "dst")
+
         result_src = self.set_port_state(src["dpid"], src["port_no"], up=False)
         result_dst = self.set_port_state(dst["dpid"], dst["port_no"], up=False)
 
@@ -103,6 +98,9 @@ class TopologyService:
         }
 
     def enable_link(self, src, dst):
+        src = self.normalize_endpoint(src, "src")
+        dst = self.normalize_endpoint(dst, "dst")
+
         result_src = self.set_port_state(src["dpid"], src["port_no"], up=True)
         result_dst = self.set_port_state(dst["dpid"], dst["port_no"], up=True)
 
@@ -115,14 +113,7 @@ class TopologyService:
         }
 
     def get_controller_status(self):
-        self.sync_links_inventory()
-
-        switches = get_switch(self.app, None)
-        hosts = get_host(self.app, None)
-
-        uptime_seconds = int(__import__("time").time() - self.app.start_time)
-        active_links = [l for l in self.links_inventory.values() if l.get("enabled", False)]
-        discovered_links = [l for l in self.links_inventory.values() if l.get("discovered", False)]
+        uptime_seconds = int(time.time() - self.app.start_time)
 
         return {
             "controller": {
@@ -133,83 +124,21 @@ class TopologyService:
                 "monitor_interval_seconds": self.app.stats_monitor.monitor_interval
             },
             "summary": {
-                "switches": len(switches),
                 "switches_connected": len(self.app.datapaths),
-                "hosts": len(hosts),
-                "links_total_inventory": len(self.links_inventory),
-                "links_discovered": len(discovered_links),
-                "links_enabled": len(active_links)
+                "port_stats_switches": len(self.app.stats_monitor.port_stats),
+                "flow_stats_switches": len(self.app.stats_monitor.flow_stats),
+                "links_inventory": len(self.links_inventory)
             }
         }
 
     def get_topology_data(self):
-        self.sync_links_inventory()
-
-        switches = get_switch(self.app, None)
-        hosts = get_host(self.app, None)
-
         nodes = []
         edges = []
-        seen_nodes = set()
 
-        for sw in switches:
-            sw_id = str(sw.dp.id)
-            if sw_id not in seen_nodes:
-                nodes.append({
-                    "id": sw_id,
-                    "type": "switch"
-                })
-                seen_nodes.add(sw_id)
-
-        for host in hosts:
-            host_id = str(host.mac)
-            switch_id = str(host.port.dpid)
-
-            if host_id not in seen_nodes:
-                nodes.append({
-                    "id": host_id,
-                    "type": "host",
-                    "mac": str(host.mac),
-                    "ipv4": list(host.ipv4) if hasattr(host, "ipv4") else [],
-                    "ipv6": list(host.ipv6) if hasattr(host, "ipv6") else []
-                })
-                seen_nodes.add(host_id)
-
-            edges.append({
-                "source": host_id,
-                "target": switch_id,
-                "type": "host-link",
-                "port": int(host.port.port_no),
-                "enabled": True
-            })
-
-        for link in self.links_inventory.values():
-            src_iface = self.app.tc_manager.get_interface_name(link["source"], link["src_port"])
-            dst_iface = self.app.tc_manager.get_interface_name(link["target"], link["dst_port"])
-
-            src_tc = self.app.tc_manager.get_interface_tc_state(src_iface)
-            dst_tc = self.app.tc_manager.get_interface_tc_state(dst_iface)
-
-            src_health = self.app.health_service.get_port_health(link["source"], link["src_port"])
-            dst_health = self.app.health_service.get_port_health(link["target"], link["dst_port"])
-
-            edges.append({
-                "source": link["source"],
-                "target": link["target"],
-                "type": "switch-link",
-                "src_port": int(link["src_port"]),
-                "dst_port": int(link["dst_port"]),
-                "src_iface": src_iface,
-                "dst_iface": dst_iface,
-                "enabled": bool(link["enabled"]),
-                "discovered": bool(link.get("discovered", False)),
-                "configured_delay": src_tc["delay"],
-                "configured_loss": src_tc["loss"],
-                "configured_bandwidth": src_tc["bandwidth"],
-                "src_tc_state": src_tc,
-                "dst_tc_state": dst_tc,
-                "src_port_health": src_health,
-                "dst_port_health": dst_health
+        for dpid in sorted(self.app.datapaths.keys()):
+            nodes.append({
+                "id": str(dpid),
+                "type": "switch"
             })
 
         return {

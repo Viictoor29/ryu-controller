@@ -5,6 +5,7 @@ import time
 class StatsMonitor:
     def __init__(self, app):
         self.app = app
+
         self.port_stats = {}
         self.port_speed = {}
         self.flow_stats = {}
@@ -14,24 +15,33 @@ class StatsMonitor:
 
     def _monitor(self):
         while True:
-            for datapath in list(self.app.datapaths.values()):
-                self._request_stats(datapath)
+            try:
+                datapaths = list(self.app.datapaths.values())
+                for datapath in datapaths:
+                    self._request_stats(datapath)
+            except Exception as e:
+                self.app.logger.exception("Error en el monitor de estadísticas: %s", e)
+
             hub.sleep(self.monitor_interval)
 
     def _request_stats(self, datapath):
+        if datapath is None:
+            return
+
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
 
         try:
-            req = parser.OFPPortStatsRequest(datapath, 0, ofproto.OFPP_ANY)
-            datapath.send_msg(req)
+            port_req = parser.OFPPortStatsRequest(datapath, 0, ofproto.OFPP_ANY)
+            datapath.send_msg(port_req)
 
-            req = parser.OFPFlowStatsRequest(datapath)
-            datapath.send_msg(req)
+            flow_req = parser.OFPFlowStatsRequest(datapath)
+            datapath.send_msg(flow_req)
         except Exception as e:
             self.app.logger.error(
                 "Error solicitando stats al switch %s: %s",
-                datapath.id, e
+                getattr(datapath, "id", "unknown"),
+                e
             )
 
     def handle_port_stats_reply(self, ev):
@@ -74,12 +84,16 @@ class StatsMonitor:
             self.port_stats[dpid][port_no] = current
 
             if prev:
-                prev_total_bytes = prev["rx_bytes"] + prev["tx_bytes"]
+                prev_total_bytes = prev.get("rx_bytes", 0) + prev.get("tx_bytes", 0)
                 current_total_bytes = current["rx_bytes"] + current["tx_bytes"]
                 delta_bytes = current_total_bytes - prev_total_bytes
-                delta_time = now - prev["timestamp"]
+                delta_time = now - prev.get("timestamp", now)
+
+                if delta_bytes < 0:
+                    delta_bytes = 0
 
                 bps = (delta_bytes * 8 / delta_time) if delta_time > 0 else 0
+
                 self.port_speed[dpid][port_no] = {
                     "bps": round(bps, 2),
                     "kbps": round(bps / 1000, 3),
@@ -110,7 +124,7 @@ class StatsMonitor:
                 for ins in getattr(stat, "instructions", []):
                     instructions.append(str(ins))
             except Exception:
-                pass
+                instructions = []
 
             flows.append({
                 "table_id": stat.table_id,

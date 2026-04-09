@@ -31,9 +31,12 @@ class SDNControllerAPI(app_manager.RyuApp):
         self.health_service = HealthService(self)
 
         wsgi = kwargs["wsgi"]
-        wsgi.register(SDNRestController, {
-            API_INSTANCE_NAME: self
-        })
+        wsgi.register(
+            SDNRestController,
+            {API_INSTANCE_NAME: self}
+        )
+
+        self.logger.info("SDNControllerAPI iniciada correctamente")
 
     @set_ev_cls(ofp_event.EventOFPStateChange, [MAIN_DISPATCHER, DEAD_DISPATCHER])
     def state_change_handler(self, ev):
@@ -47,6 +50,8 @@ class SDNControllerAPI(app_manager.RyuApp):
             if dpid not in self.datapaths:
                 self.datapaths[dpid] = datapath
                 self.logger.info("Switch conectado: %s", dpid)
+            else:
+                self.datapaths[dpid] = datapath
 
         elif ev.state == DEAD_DISPATCHER:
             if dpid in self.datapaths:
@@ -55,8 +60,14 @@ class SDNControllerAPI(app_manager.RyuApp):
 
     @set_ev_cls(ofp_event.EventOFPPortStatsReply, MAIN_DISPATCHER)
     def port_stats_reply_handler(self, ev):
-        self.stats_monitor.handle_port_stats_reply(ev)
+        try:
+            self.stats_monitor.handle_port_stats_reply(ev)
+        except Exception as e:
+            self.logger.exception("Error procesando EventOFPPortStatsReply: %s", e)
 
     @set_ev_cls(ofp_event.EventOFPFlowStatsReply, MAIN_DISPATCHER)
     def flow_stats_reply_handler(self, ev):
-        self.stats_monitor.handle_flow_stats_reply(ev)
+        try:
+            self.stats_monitor.handle_flow_stats_reply(ev)
+        except Exception as e:
+            self.logger.exception("Error procesando EventOFPFlowStatsReply: %s", e)

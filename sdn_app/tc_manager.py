@@ -9,16 +9,31 @@ class TCManager:
     def get_interface_name(self, dpid, port_no):
         return f"s{int(dpid)}-eth{int(port_no)}"
 
-    def run_command(self, cmd):
+    def normalize_endpoint(self, endpoint, name="endpoint"):
+        if not isinstance(endpoint, dict):
+            raise ValueError(f"{name} debe ser un objeto JSON")
+
+        if "dpid" not in endpoint or "port_no" not in endpoint:
+            raise ValueError(f"{name} debe incluir 'dpid' y 'port_no'")
+
+        return {
+            "dpid": str(endpoint["dpid"]),
+            "port_no": int(endpoint["port_no"])
+        }
+
+    def run_command(self, cmd, timeout=5):
         try:
             completed = subprocess.run(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                check=False
+                check=False,
+                timeout=timeout
             )
             return completed.returncode, completed.stdout.strip(), completed.stderr.strip()
+        except subprocess.TimeoutExpired:
+            return 1, "", f"Timeout ejecutando comando: {' '.join(cmd)}"
         except Exception as e:
             return 1, "", str(e)
 
@@ -99,7 +114,19 @@ class TCManager:
         return value
 
     def clear_interface_tc(self, iface):
-        self.run_command(["sudo", "tc", "qdisc", "del", "dev", iface, "root"])
+        rc, out, err = self.run_command(["sudo", "tc", "qdisc", "del", "dev", iface, "root"])
+
+        if rc != 0:
+            error_text = (err or out).lower()
+            if "no such file" in error_text or "cannot find device" in error_text:
+                raise RuntimeError(f"La interfaz {iface} no existe")
+            if "noqueue" in error_text or "no qdisc" in error_text or "not found" in error_text:
+                return
+            if "operation not permitted" in error_text or "permission denied" in error_text:
+                raise RuntimeError(
+                    f"No hay permisos para ejecutar tc sobre {iface}. "
+                    f"Configura sudo sin password para el comando tc."
+                )
 
     def set_interface_tc(self, iface, delay=None, loss=None, bandwidth=None):
         delay = self.normalize_delay(delay) if delay is not None else None
@@ -132,7 +159,18 @@ class TCManager:
 
         rc, out, err = self.run_command(args)
         if rc != 0:
-            raise RuntimeError(f"Error aplicando tc en {iface}: {err or out}")
+            error_text = err or out
+
+            if "operation not permitted" in error_text.lower() or "permission denied" in error_text.lower():
+                raise RuntimeError(
+                    f"No hay permisos para ejecutar tc sobre {iface}. "
+                    f"Configura sudo sin password para el comando tc."
+                )
+
+            if "cannot find device" in error_text.lower() or "no such file" in error_text.lower():
+                raise RuntimeError(f"La interfaz {iface} no existe")
+
+            raise RuntimeError(f"Error aplicando tc en {iface}: {error_text}")
 
         state = self.get_interface_tc_state(iface)
         return {
@@ -143,6 +181,9 @@ class TCManager:
         }
 
     def update_link_tc(self, src, dst, delay=None, loss=None, bandwidth=None):
+        src = self.normalize_endpoint(src, "src")
+        dst = self.normalize_endpoint(dst, "dst")
+
         src_iface = self.get_interface_name(src["dpid"], src["port_no"])
         dst_iface = self.get_interface_name(dst["dpid"], dst["port_no"])
 
@@ -162,18 +203,21 @@ class TCManager:
 
         return {
             "src": {
-                "dpid": str(src["dpid"]),
-                "port_no": int(src["port_no"]),
+                "dpid": src["dpid"],
+                "port_no": src["port_no"],
                 **src_result
             },
             "dst": {
-                "dpid": str(dst["dpid"]),
-                "port_no": int(dst["port_no"]),
+                "dpid": dst["dpid"],
+                "port_no": dst["port_no"],
                 **dst_result
             }
         }
 
     def set_link_loss(self, src, dst, loss):
+        src = self.normalize_endpoint(src, "src")
+        dst = self.normalize_endpoint(dst, "dst")
+
         src_iface = self.get_interface_name(src["dpid"], src["port_no"])
         dst_iface = self.get_interface_name(dst["dpid"], dst["port_no"])
 
@@ -193,6 +237,9 @@ class TCManager:
         return result
 
     def set_link_delay(self, src, dst, delay):
+        src = self.normalize_endpoint(src, "src")
+        dst = self.normalize_endpoint(dst, "dst")
+
         src_iface = self.get_interface_name(src["dpid"], src["port_no"])
         dst_iface = self.get_interface_name(dst["dpid"], dst["port_no"])
 
@@ -212,6 +259,9 @@ class TCManager:
         return result
 
     def set_link_bandwidth(self, src, dst, bandwidth):
+        src = self.normalize_endpoint(src, "src")
+        dst = self.normalize_endpoint(dst, "dst")
+
         src_iface = self.get_interface_name(src["dpid"], src["port_no"])
         dst_iface = self.get_interface_name(dst["dpid"], dst["port_no"])
 
@@ -231,6 +281,9 @@ class TCManager:
         return result
 
     def clear_link_tc(self, src, dst):
+        src = self.normalize_endpoint(src, "src")
+        dst = self.normalize_endpoint(dst, "dst")
+
         src_iface = self.get_interface_name(src["dpid"], src["port_no"])
         dst_iface = self.get_interface_name(dst["dpid"], dst["port_no"])
 
@@ -239,13 +292,13 @@ class TCManager:
 
         return {
             "src": {
-                "dpid": str(src["dpid"]),
-                "port_no": int(src["port_no"]),
+                "dpid": src["dpid"],
+                "port_no": src["port_no"],
                 "iface": src_iface
             },
             "dst": {
-                "dpid": str(dst["dpid"]),
-                "port_no": int(dst["port_no"]),
+                "dpid": dst["dpid"],
+                "port_no": dst["port_no"],
                 "iface": dst_iface
             },
             "link_state": "tc_cleared"

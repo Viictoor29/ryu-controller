@@ -5,29 +5,35 @@ class HealthService:
     def __init__(self, app):
         self.app = app
 
+    def _empty_speed(self):
+        return {
+            "bps": 0,
+            "kbps": 0,
+            "mbps": 0
+        }
+
+    def _compute_port_status(self, stats):
+        total_errors = stats.get("rx_errors", 0) + stats.get("tx_errors", 0)
+        total_drops = stats.get("rx_dropped", 0) + stats.get("tx_dropped", 0)
+
+        if total_errors > 0:
+            return "degraded"
+        if total_drops > 0:
+            return "warning"
+        return "healthy"
+
     def get_port_health(self, dpid, port_no):
         dpid = str(dpid)
         port_no = int(port_no)
 
         stats = self.app.stats_monitor.port_stats.get(dpid, {}).get(port_no, {})
-        speed = self.app.stats_monitor.port_speed.get(dpid, {}).get(port_no, {
-            "bps": 0,
-            "kbps": 0,
-            "mbps": 0
-        })
-
-        total_errors = stats.get("rx_errors", 0) + stats.get("tx_errors", 0)
-        total_drops = stats.get("rx_dropped", 0) + stats.get("tx_dropped", 0)
-
-        if total_errors > 0:
-            status = "degraded"
-        elif total_drops > 0:
-            status = "warning"
-        else:
-            status = "healthy"
+        speed = self.app.stats_monitor.port_speed.get(dpid, {}).get(
+            port_no,
+            self._empty_speed()
+        )
 
         return {
-            "status": status,
+            "status": self._compute_port_status(stats),
             "stats": stats,
             "speed": speed
         }
@@ -40,7 +46,10 @@ class HealthService:
         return "healthy"
 
     def get_health_metrics(self):
-        self.app.topology_service.sync_links_inventory()
+        try:
+            self.app.topology_service.sync_links_inventory()
+        except Exception as e:
+            self.app.logger.exception("Error sincronizando inventario de enlaces: %s", e)
 
         switches_health = []
 
@@ -60,11 +69,7 @@ class HealthService:
 
             for port_no in sorted(dpid_port_stats.keys()):
                 stats = dpid_port_stats.get(port_no, {})
-                speed = dpid_port_speed.get(port_no, {
-                    "bps": 0,
-                    "kbps": 0,
-                    "mbps": 0
-                })
+                speed = dpid_port_speed.get(port_no, self._empty_speed())
 
                 total_rx_errors += stats.get("rx_errors", 0)
                 total_tx_errors += stats.get("tx_errors", 0)
@@ -72,15 +77,9 @@ class HealthService:
                 total_tx_dropped += stats.get("tx_dropped", 0)
                 total_bps += speed.get("bps", 0)
 
-                port_status = "healthy"
-                if stats.get("rx_errors", 0) + stats.get("tx_errors", 0) > 0:
-                    port_status = "degraded"
-                elif stats.get("rx_dropped", 0) + stats.get("tx_dropped", 0) > 0:
-                    port_status = "warning"
-
                 ports.append({
-                    "port_no": port_no,
-                    "status": port_status,
+                    "port_no": int(port_no),
+                    "status": self._compute_port_status(stats),
                     "stats": stats,
                     "speed": speed
                 })
@@ -132,40 +131,41 @@ class HealthService:
         total_flows = 0
         total_bps = 0
 
-        for sw in health["switches"]:
+        for sw in health.get("switches", []):
             total_flows += sw.get("flow_count", 0)
             total_bps += sw.get("traffic", {}).get("bps", 0)
 
-            if sw["status"] == "healthy":
+            if sw.get("status") == "healthy":
                 healthy_switches += 1
-            elif sw["status"] == "warning":
+            elif sw.get("status") == "warning":
                 warning_switches += 1
-            elif sw["status"] == "degraded":
+            elif sw.get("status") == "degraded":
                 degraded_switches += 1
 
             for port in sw.get("ports", []):
-                if port["status"] == "healthy":
+                if port.get("status") == "healthy":
                     healthy_ports += 1
-                elif port["status"] == "warning":
+                elif port.get("status") == "warning":
                     warning_ports += 1
-                elif port["status"] == "degraded":
+                elif port.get("status") == "degraded":
                     degraded_ports += 1
 
-        links_total = len(self.app.topology_service.links_inventory)
+        links_inventory = self.app.topology_service.links_inventory
+        links_total = len(links_inventory)
         links_enabled = len([
-            l for l in self.app.topology_service.links_inventory.values()
-            if l.get("enabled", False)
+            link for link in links_inventory.values()
+            if link.get("enabled", False)
         ])
         links_discovered = len([
-            l for l in self.app.topology_service.links_inventory.values()
-            if l.get("discovered", False)
+            link for link in links_inventory.values()
+            if link.get("discovered", False)
         ])
 
         return {
             "timestamp": int(time.time()),
             "controller_uptime_seconds": int(time.time() - self.app.start_time),
             "switches": {
-                "total": health["switch_count"],
+                "total": health.get("switch_count", 0),
                 "healthy": healthy_switches,
                 "warning": warning_switches,
                 "degraded": degraded_switches
@@ -189,7 +189,10 @@ class HealthService:
                 "mbps": round(total_bps / 1000000, 6)
             },
             "overall_status": self.compute_overall_status(
-                degraded_switches, warning_switches, degraded_ports, warning_ports
+                degraded_switches,
+                warning_switches,
+                degraded_ports,
+                warning_ports
             )
         }
 
@@ -205,7 +208,7 @@ class HealthService:
         ports = []
         for port_no in sorted(self.app.stats_monitor.port_stats[dpid].keys()):
             ports.append({
-                "port_no": port_no,
+                "port_no": int(port_no),
                 "health": self.get_port_health(dpid, port_no)
             })
 
@@ -216,8 +219,10 @@ class HealthService:
 
     def get_switch_flows(self, dpid):
         dpid = str(dpid)
+        flows = self.app.stats_monitor.flow_stats.get(dpid, [])
+
         return {
             "dpid": dpid,
-            "flow_count": len(self.app.stats_monitor.flow_stats.get(dpid, [])),
-            "flows": self.app.stats_monitor.flow_stats.get(dpid, [])
+            "flow_count": len(flows),
+            "flows": flows
         }
