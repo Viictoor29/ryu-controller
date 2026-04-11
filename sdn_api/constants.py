@@ -1,1 +1,0 @@
-API_INSTANCE_NAME = "sdn_api_app"
