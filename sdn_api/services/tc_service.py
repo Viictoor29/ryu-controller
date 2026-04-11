@@ -1,25 +1,13 @@
-import subprocess
 import re
+import subprocess
 
 
-class TCManager:
+class TcService:
     def __init__(self, app):
         self.app = app
 
     def get_interface_name(self, dpid, port_no):
         return f"s{int(dpid)}-eth{int(port_no)}"
-
-    def normalize_endpoint(self, endpoint, name="endpoint"):
-        if not isinstance(endpoint, dict):
-            raise ValueError(f"{name} debe ser un objeto JSON")
-
-        if "dpid" not in endpoint or "port_no" not in endpoint:
-            raise ValueError(f"{name} debe incluir 'dpid' y 'port_no'")
-
-        return {
-            "dpid": str(endpoint["dpid"]),
-            "port_no": int(endpoint["port_no"])
-        }
 
     def run_command(self, cmd, timeout=5):
         try:
@@ -181,25 +169,11 @@ class TCManager:
         }
 
     def update_link_tc(self, src, dst, delay=None, loss=None, bandwidth=None):
-        src = self.normalize_endpoint(src, "src")
-        dst = self.normalize_endpoint(dst, "dst")
-
         src_iface = self.get_interface_name(src["dpid"], src["port_no"])
         dst_iface = self.get_interface_name(dst["dpid"], dst["port_no"])
 
-        src_result = self.set_interface_tc(
-            src_iface,
-            delay=delay,
-            loss=loss,
-            bandwidth=bandwidth
-        )
-
-        dst_result = self.set_interface_tc(
-            dst_iface,
-            delay=delay,
-            loss=loss,
-            bandwidth=bandwidth
-        )
+        src_result = self.set_interface_tc(src_iface, delay=delay, loss=loss, bandwidth=bandwidth)
+        dst_result = self.set_interface_tc(dst_iface, delay=delay, loss=loss, bandwidth=bandwidth)
 
         return {
             "src": {
@@ -214,10 +188,7 @@ class TCManager:
             }
         }
 
-    def set_link_loss(self, src, dst, loss):
-        src = self.normalize_endpoint(src, "src")
-        dst = self.normalize_endpoint(dst, "dst")
-
+    def set_link_loss(self, src, dst):
         src_iface = self.get_interface_name(src["dpid"], src["port_no"])
         dst_iface = self.get_interface_name(dst["dpid"], dst["port_no"])
 
@@ -227,19 +198,9 @@ class TCManager:
         current_delay = src_current["delay"] or dst_current["delay"]
         current_bw = src_current["bandwidth"] or dst_current["bandwidth"]
 
-        result = self.update_link_tc(
-            src, dst,
-            delay=current_delay,
-            loss=loss,
-            bandwidth=current_bw
-        )
-        result["link_state"] = "loss_updated"
-        return result
+        return current_delay, current_bw
 
-    def set_link_delay(self, src, dst, delay):
-        src = self.normalize_endpoint(src, "src")
-        dst = self.normalize_endpoint(dst, "dst")
-
+    def set_link_delay(self, src, dst):
         src_iface = self.get_interface_name(src["dpid"], src["port_no"])
         dst_iface = self.get_interface_name(dst["dpid"], dst["port_no"])
 
@@ -249,19 +210,9 @@ class TCManager:
         current_loss = src_current["loss"] if src_current["loss"] is not None else dst_current["loss"]
         current_bw = src_current["bandwidth"] or dst_current["bandwidth"]
 
-        result = self.update_link_tc(
-            src, dst,
-            delay=delay,
-            loss=current_loss,
-            bandwidth=current_bw
-        )
-        result["link_state"] = "delay_updated"
-        return result
+        return current_loss, current_bw
 
-    def set_link_bandwidth(self, src, dst, bandwidth):
-        src = self.normalize_endpoint(src, "src")
-        dst = self.normalize_endpoint(dst, "dst")
-
+    def set_link_bandwidth(self, src, dst):
         src_iface = self.get_interface_name(src["dpid"], src["port_no"])
         dst_iface = self.get_interface_name(dst["dpid"], dst["port_no"])
 
@@ -271,19 +222,9 @@ class TCManager:
         current_delay = src_current["delay"] or dst_current["delay"]
         current_loss = src_current["loss"] if src_current["loss"] is not None else dst_current["loss"]
 
-        result = self.update_link_tc(
-            src, dst,
-            delay=current_delay,
-            loss=current_loss,
-            bandwidth=bandwidth
-        )
-        result["link_state"] = "bandwidth_updated"
-        return result
+        return current_delay, current_loss
 
     def clear_link_tc(self, src, dst):
-        src = self.normalize_endpoint(src, "src")
-        dst = self.normalize_endpoint(dst, "dst")
-
         src_iface = self.get_interface_name(src["dpid"], src["port_no"])
         dst_iface = self.get_interface_name(dst["dpid"], dst["port_no"])
 

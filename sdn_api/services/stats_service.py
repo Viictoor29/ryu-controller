@@ -1,17 +1,41 @@
-from ryu.lib import hub
 import time
+from ryu.controller.handler import MAIN_DISPATCHER, DEAD_DISPATCHER
+from ryu.lib import hub
 
 
-class StatsMonitor:
+class StatsService:
     def __init__(self, app):
         self.app = app
+        self.monitor_thread = None
 
-        self.port_stats = {}
-        self.port_speed = {}
-        self.flow_stats = {}
+    def _empty_speed(self):
+        return {
+            "bps": 0,
+            "kbps": 0,
+            "mbps": 0
+        }
 
-        self.monitor_interval = 5
+    def start_monitor(self):
         self.monitor_thread = hub.spawn(self._monitor)
+
+    def handle_state_change(self, ev):
+        datapath = ev.datapath
+        if datapath is None:
+            return
+
+        dpid = int(datapath.id)
+
+        if ev.state == MAIN_DISPATCHER:
+            if dpid not in self.app.datapaths:
+                self.app.datapaths[dpid] = datapath
+                self.app.logger.info("Switch conectado: %s", dpid)
+            else:
+                self.app.datapaths[dpid] = datapath
+
+        elif ev.state == DEAD_DISPATCHER:
+            if dpid in self.app.datapaths:
+                del self.app.datapaths[dpid]
+                self.app.logger.info("Switch desconectado: %s", dpid)
 
     def _monitor(self):
         while True:
@@ -22,7 +46,7 @@ class StatsMonitor:
             except Exception as e:
                 self.app.logger.exception("Error en el monitor de estadísticas: %s", e)
 
-            hub.sleep(self.monitor_interval)
+            hub.sleep(self.app.monitor_interval)
 
     def _request_stats(self, datapath):
         if datapath is None:
@@ -48,11 +72,11 @@ class StatsMonitor:
         dpid = str(ev.msg.datapath.id)
         now = time.time()
 
-        if dpid not in self.port_stats:
-            self.port_stats[dpid] = {}
+        if dpid not in self.app.port_stats:
+            self.app.port_stats[dpid] = {}
 
-        if dpid not in self.port_speed:
-            self.port_speed[dpid] = {}
+        if dpid not in self.app.port_speed:
+            self.app.port_speed[dpid] = {}
 
         for stat in ev.msg.body:
             port_no = int(stat.port_no)
@@ -60,7 +84,7 @@ class StatsMonitor:
             if port_no > 0x7fffffff:
                 continue
 
-            prev = self.port_stats[dpid].get(port_no)
+            prev = self.app.port_stats[dpid].get(port_no)
 
             current = {
                 "port_no": port_no,
@@ -81,7 +105,7 @@ class StatsMonitor:
                 "timestamp": now
             }
 
-            self.port_stats[dpid][port_no] = current
+            self.app.port_stats[dpid][port_no] = current
 
             if prev:
                 prev_total_bytes = prev.get("rx_bytes", 0) + prev.get("tx_bytes", 0)
@@ -94,17 +118,13 @@ class StatsMonitor:
 
                 bps = (delta_bytes * 8 / delta_time) if delta_time > 0 else 0
 
-                self.port_speed[dpid][port_no] = {
+                self.app.port_speed[dpid][port_no] = {
                     "bps": round(bps, 2),
                     "kbps": round(bps / 1000, 3),
                     "mbps": round(bps / 1000000, 6)
                 }
             else:
-                self.port_speed[dpid][port_no] = {
-                    "bps": 0,
-                    "kbps": 0,
-                    "mbps": 0
-                }
+                self.app.port_speed[dpid][port_no] = self._empty_speed()
 
     def handle_flow_stats_reply(self, ev):
         dpid = str(ev.msg.datapath.id)
@@ -136,13 +156,4 @@ class StatsMonitor:
                 "instructions": instructions
             })
 
-        self.flow_stats[dpid] = flows
-
-    def get_port_stats(self, dpid):
-        return self.port_stats.get(str(dpid), {})
-
-    def get_port_speed(self, dpid):
-        return self.port_speed.get(str(dpid), {})
-
-    def get_flow_stats(self, dpid):
-        return self.flow_stats.get(str(dpid), [])
+        self.app.flow_stats[dpid] = flows

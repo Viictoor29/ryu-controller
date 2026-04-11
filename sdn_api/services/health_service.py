@@ -2,8 +2,9 @@ import time
 
 
 class HealthService:
-    def __init__(self, app):
+    def __init__(self, app, topology_service):
         self.app = app
+        self.topology_service = topology_service
 
     def _empty_speed(self):
         return {
@@ -26,11 +27,8 @@ class HealthService:
         dpid = str(dpid)
         port_no = int(port_no)
 
-        stats = self.app.stats_monitor.port_stats.get(dpid, {}).get(port_no, {})
-        speed = self.app.stats_monitor.port_speed.get(dpid, {}).get(
-            port_no,
-            self._empty_speed()
-        )
+        stats = self.app.port_stats.get(dpid, {}).get(port_no, {})
+        speed = self.app.port_speed.get(dpid, {}).get(port_no, self._empty_speed())
 
         return {
             "status": self._compute_port_status(stats),
@@ -47,7 +45,7 @@ class HealthService:
 
     def get_health_metrics(self):
         try:
-            self.app.topology_service.sync_links_inventory()
+            self.topology_service.sync_links_inventory()
         except Exception as e:
             self.app.logger.exception("Error sincronizando inventario de enlaces: %s", e)
 
@@ -57,9 +55,9 @@ class HealthService:
             dpid_str = str(dpid)
 
             ports = []
-            dpid_port_stats = self.app.stats_monitor.port_stats.get(dpid_str, {})
-            dpid_port_speed = self.app.stats_monitor.port_speed.get(dpid_str, {})
-            dpid_flows = self.app.stats_monitor.flow_stats.get(dpid_str, [])
+            dpid_port_stats = self.app.port_stats.get(dpid_str, {})
+            dpid_port_speed = self.app.port_speed.get(dpid_str, {})
+            dpid_flows = self.app.flow_stats.get(dpid_str, [])
 
             total_rx_errors = 0
             total_tx_errors = 0
@@ -150,16 +148,10 @@ class HealthService:
                 elif port.get("status") == "degraded":
                     degraded_ports += 1
 
-        links_inventory = self.app.topology_service.links_inventory
+        links_inventory = self.app.links_inventory
         links_total = len(links_inventory)
-        links_enabled = len([
-            link for link in links_inventory.values()
-            if link.get("enabled", False)
-        ])
-        links_discovered = len([
-            link for link in links_inventory.values()
-            if link.get("discovered", False)
-        ])
+        links_enabled = len([link for link in links_inventory.values() if link.get("enabled", False)])
+        links_discovered = len([link for link in links_inventory.values() if link.get("discovered", False)])
 
         return {
             "timestamp": int(time.time()),
@@ -199,14 +191,14 @@ class HealthService:
     def get_switch_ports(self, dpid):
         dpid = str(dpid)
 
-        if dpid not in self.app.stats_monitor.port_stats:
+        if dpid not in self.app.port_stats:
             return {
                 "dpid": dpid,
                 "ports": []
             }
 
         ports = []
-        for port_no in sorted(self.app.stats_monitor.port_stats[dpid].keys()):
+        for port_no in sorted(self.app.port_stats[dpid].keys()):
             ports.append({
                 "port_no": int(port_no),
                 "health": self.get_port_health(dpid, port_no)
@@ -219,10 +211,29 @@ class HealthService:
 
     def get_switch_flows(self, dpid):
         dpid = str(dpid)
-        flows = self.app.stats_monitor.flow_stats.get(dpid, [])
+        flows = self.app.flow_stats.get(dpid, [])
 
         return {
             "dpid": dpid,
             "flow_count": len(flows),
             "flows": flows
+        }
+
+    def get_controller_status(self):
+        uptime_seconds = int(time.time() - self.app.start_time)
+
+        return {
+            "controller": {
+                "name": "Ryu SDN Controller",
+                "status": "running",
+                "uptime_seconds": uptime_seconds,
+                "ofp_versions": self.app.OFP_VERSIONS,
+                "monitor_interval_seconds": self.app.monitor_interval
+            },
+            "summary": {
+                "switches_connected": len(self.app.datapaths),
+                "port_stats_switches": len(self.app.port_stats),
+                "flow_stats_switches": len(self.app.flow_stats),
+                "links_inventory": len(self.app.links_inventory)
+            }
         }
