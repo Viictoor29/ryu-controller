@@ -11,6 +11,7 @@ from topology_service import TopologyService
 from tc_service import TCService
 from stats_service import StatsService
 from health_service import HealthService
+from traffic_service import TrafficService
 
 import time
 
@@ -41,6 +42,7 @@ class SDNControllerAPI(app_manager.RyuApp):
         self.tc_service = TCService(self)
         self.stats_service = StatsService(self)
         self.health_service = HealthService(self)
+        self.traffic_service = TrafficService(self)
 
         self.monitor_thread = hub.spawn(self.stats_service.monitor_loop)
 

@@ -179,3 +179,47 @@ class SDNRestController(ControllerBase):
         except Exception as e:
             self.sdn_app.logger.exception("Error en GET /api/switch/%s/flows: %s", kwargs.get("dpid"), e)
             return error_response(e, status=500)
+    
+    @route("traffic_ping", "/api/traffic/ping", methods=["POST", "OPTIONS"])
+    def traffic_ping(self, req, **kwargs):
+        if req.method == "OPTIONS":
+            return cors_preflight()
+
+        try:
+            body = read_json_body(req)
+            require_fields(body, "src_host", "dst_host")
+
+            result = self.sdn_app.traffic_service.generate_ping(
+                src_host=body["src_host"],
+                dst_host=body["dst_host"],
+                count=body.get("count", 4),
+                interval=body.get("interval", 0.2),
+                timeout=body.get("timeout", 10)
+            )
+            return success_response(result)
+        except Exception as e:
+            self.sdn_app.logger.exception("Error en POST /api/traffic/ping: %s", e)
+            return error_response(e, status=400)
+
+    @route("traffic_iperf", "/api/traffic/iperf", methods=["POST", "OPTIONS"])
+    def traffic_iperf(self, req, **kwargs):
+        if req.method == "OPTIONS":
+            return cors_preflight()
+
+        try:
+            body = read_json_body(req)
+            require_fields(body, "src_host", "dst_host")
+
+            result = self.sdn_app.traffic_service.generate_iperf(
+                src_host=body["src_host"],
+                dst_host=body["dst_host"],
+                duration=body.get("duration", 10),
+                udp=body.get("udp", False),
+                bandwidth=body.get("bandwidth"),
+                port=body.get("port", 5201),
+                timeout=body.get("timeout", 20)
+            )
+            return success_response(result)
+        except Exception as e:
+            self.sdn_app.logger.exception("Error en POST /api/traffic/iperf: %s", e)
+            return error_response(e, status=400)
