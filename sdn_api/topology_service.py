@@ -3,6 +3,7 @@ from rest_helpers import (
     normalize_endpoint,
     get_interface_name,
     get_interface_tc_state,
+    compute_port_status,
 )
 
 
@@ -21,6 +22,16 @@ class TopologyService:
 
     def get_interface_tc_state(self, iface):
         return get_interface_tc_state(iface)
+
+    def compute_port_status(self, stats):
+        return compute_port_status(stats)
+
+    def _combine_link_degradation(self, src_status, dst_status):
+        if "degraded" in (src_status, dst_status):
+            return "degraded"
+        if "warning" in (src_status, dst_status):
+            return "warning"
+        return "healthy"
 
     def sync_links_inventory(self):
         """
@@ -103,6 +114,12 @@ class TopologyService:
         )
         datapath.send_msg(msg)
 
+        dpid_str = str(dpid)
+        if dpid_str not in self.app.port_admin_state:
+            self.app.port_admin_state[dpid_str] = {}
+
+        self.app.port_admin_state[dpid_str][port_no] = "up" if up else "down"
+
         return {
             "dpid": str(dpid),
             "port_no": port_no,
@@ -182,6 +199,12 @@ class TopologyService:
         for host in hosts:
             host_id = str(host.mac)
             switch_id = str(host.port.dpid)
+            switch_port = int(host.port.port_no)
+            switch_iface = self.get_interface_name(switch_id, switch_port)
+            switch_tc = self.get_interface_tc_state(switch_iface)
+
+            port_stats = self.app.port_stats.get(switch_id, {}).get(switch_port, {})
+            port_status = self.compute_port_status(port_stats)
 
             if host_id not in seen_nodes:
                 nodes.append({
@@ -193,21 +216,35 @@ class TopologyService:
                 })
                 seen_nodes.add(host_id)
 
+            admin_state = self.app.port_admin_state.get(switch_id, {}).get(switch_port, "up")
+            enabled = admin_state == "up"
+
             edges.append({
                 "source": host_id,
                 "target": switch_id,
                 "type": "host-link",
-                "port": int(host.port.port_no),
-                "enabled": True
+                "port": switch_port,
+                "iface": switch_iface,
+                "enabled": enabled,
+                "admin_state": admin_state,
+                "tc_sw_port": switch_tc,
+                "degradation-link": port_status
             })
 
-        # Links entre switches + estado tc
+        # Links entre switches + estado tc + degradación
         for link in self.app.links_inventory.values():
             src_iface = self.get_interface_name(link["source"], link["src_port"])
             dst_iface = self.get_interface_name(link["target"], link["dst_port"])
 
             src_tc = self.get_interface_tc_state(src_iface)
             dst_tc = self.get_interface_tc_state(dst_iface)
+
+            src_stats = self.app.port_stats.get(str(link["source"]), {}).get(int(link["src_port"]), {})
+            dst_stats = self.app.port_stats.get(str(link["target"]), {}).get(int(link["dst_port"]), {})
+
+            src_degradation = self.compute_port_status(src_stats)
+            dst_degradation = self.compute_port_status(dst_stats)
+            link_degradation = self._combine_link_degradation(src_degradation, dst_degradation)
 
             edges.append({
                 "source": link["source"],
@@ -219,11 +256,11 @@ class TopologyService:
                 "dst_iface": dst_iface,
                 "enabled": bool(link.get("enabled", False)),
                 "discovered": bool(link.get("discovered", False)),
-                "delay": src_tc["delay"] or dst_tc["delay"],
-                "loss": src_tc["loss"] if src_tc["loss"] is not None else dst_tc["loss"],
-                "bandwidth": src_tc["bandwidth"] or dst_tc["bandwidth"],
                 "src_tc": src_tc,
-                "dst_tc": dst_tc
+                "dst_tc": dst_tc,
+                "src_degradation": src_degradation,
+                "dst_degradation": dst_degradation,
+                "degradation-link": link_degradation
             })
 
         return {

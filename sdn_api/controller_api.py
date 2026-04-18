@@ -35,6 +35,7 @@ class SDNControllerAPI(app_manager.RyuApp):
 
         self.port_stats = {}
         self.port_speed = {}
+        self.port_admin_state = {}
         self.flow_stats = {}
         self.monitor_interval = 5
 

@@ -101,6 +101,71 @@ class TCService:
             "bandwidth": state["bandwidth"]
         }
 
+    def _build_port_response(self, endpoint, result, port_state=None):
+        return {
+            "dpid": endpoint["dpid"],
+            "port_no": endpoint["port_no"],
+            **result,
+            "port_state": port_state or "tc_updated"
+        }
+
+    def update_port_tc(self, port, delay=None, loss=None, bandwidth=None):
+        port = self.normalize_endpoint(port, "port")
+        iface = self.get_interface_name(port["dpid"], port["port_no"])
+        result = self.set_interface_tc(iface, delay=delay, loss=loss, bandwidth=bandwidth)
+        return self._build_port_response(port, result)
+
+    def set_port_loss(self, port, loss):
+        port = self.normalize_endpoint(port, "port")
+        iface = self.get_interface_name(port["dpid"], port["port_no"])
+        current = self.get_interface_tc_state(iface)
+
+        result = self.set_interface_tc(
+            iface,
+            delay=current["delay"],
+            loss=loss,
+            bandwidth=current["bandwidth"]
+        )
+        return self._build_port_response(port, result, port_state="loss_updated")
+
+    def set_port_delay(self, port, delay):
+        port = self.normalize_endpoint(port, "port")
+        iface = self.get_interface_name(port["dpid"], port["port_no"])
+        current = self.get_interface_tc_state(iface)
+
+        result = self.set_interface_tc(
+            iface,
+            delay=delay,
+            loss=current["loss"],
+            bandwidth=current["bandwidth"]
+        )
+        return self._build_port_response(port, result, port_state="delay_updated")
+
+    def set_port_bandwidth(self, port, bandwidth):
+        port = self.normalize_endpoint(port, "port")
+        iface = self.get_interface_name(port["dpid"], port["port_no"])
+        current = self.get_interface_tc_state(iface)
+
+        result = self.set_interface_tc(
+            iface,
+            delay=current["delay"],
+            loss=current["loss"],
+            bandwidth=bandwidth
+        )
+        return self._build_port_response(port, result, port_state="bandwidth_updated")
+
+    def clear_port_tc(self, port):
+        port = self.normalize_endpoint(port, "port")
+        iface = self.get_interface_name(port["dpid"], port["port_no"])
+        self.clear_interface_tc(iface)
+
+        return {
+            "dpid": port["dpid"],
+            "port_no": port["port_no"],
+            "iface": iface,
+            "port_state": "tc_cleared"
+        }
+
     def update_link_tc(self, src, dst, delay=None, loss=None, bandwidth=None):
         src = self.normalize_endpoint(src, "src")
         dst = self.normalize_endpoint(dst, "dst")

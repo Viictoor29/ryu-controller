@@ -118,6 +118,66 @@ class SDNRestController(ControllerBase):
             self.sdn_app.logger.exception("Error en POST /api/links/tc/clear: %s", e)
             return error_response(e, status=400)
 
+    @route("set_port_loss", "/api/ports/loss", methods=["POST", "OPTIONS"])
+    def set_port_loss(self, req, **kwargs):
+        if req.method == "OPTIONS":
+            return cors_preflight()
+
+        try:
+            body = read_json_body(req)
+            require_fields(body, "port", "loss")
+
+            result = self.sdn_app.tc_service.set_port_loss(body["port"], body["loss"])
+            return success_response(result)
+        except Exception as e:
+            self.sdn_app.logger.exception("Error en POST /api/ports/loss: %s", e)
+            return error_response(e, status=400)
+
+    @route("set_port_bandwidth", "/api/ports/bandwidth", methods=["POST", "OPTIONS"])
+    def set_port_bandwidth(self, req, **kwargs):
+        if req.method == "OPTIONS":
+            return cors_preflight()
+
+        try:
+            body = read_json_body(req)
+            require_fields(body, "port", "bandwidth")
+
+            result = self.sdn_app.tc_service.set_port_bandwidth(body["port"], body["bandwidth"])
+            return success_response(result)
+        except Exception as e:
+            self.sdn_app.logger.exception("Error en POST /api/ports/bandwidth: %s", e)
+            return error_response(e, status=400)
+
+    @route("set_port_delay", "/api/ports/delay", methods=["POST", "OPTIONS"])
+    def set_port_delay(self, req, **kwargs):
+        if req.method == "OPTIONS":
+            return cors_preflight()
+
+        try:
+            body = read_json_body(req)
+            require_fields(body, "port", "delay")
+
+            result = self.sdn_app.tc_service.set_port_delay(body["port"], body["delay"])
+            return success_response(result)
+        except Exception as e:
+            self.sdn_app.logger.exception("Error en POST /api/ports/delay: %s", e)
+            return error_response(e, status=400)
+
+    @route("clear_port_tc", "/api/ports/tc/clear", methods=["POST", "OPTIONS"])
+    def clear_port_tc(self, req, **kwargs):
+        if req.method == "OPTIONS":
+            return cors_preflight()
+
+        try:
+            body = read_json_body(req)
+            require_fields(body, "port")
+
+            result = self.sdn_app.tc_service.clear_port_tc(body["port"])
+            return success_response(result)
+        except Exception as e:
+            self.sdn_app.logger.exception("Error en POST /api/ports/tc/clear: %s", e)
+            return error_response(e, status=400)
+
     @route("controller_status", "/api/controller/status", methods=["GET", "OPTIONS"])
     def get_controller_status(self, req, **kwargs):
         if req.method == "OPTIONS":
@@ -222,4 +282,42 @@ class SDNRestController(ControllerBase):
             return success_response(result)
         except Exception as e:
             self.sdn_app.logger.exception("Error en POST /api/traffic/iperf: %s", e)
+            return error_response(e, status=400)
+    
+    @route("disable_port", "/api/ports/disable", methods=["POST", "OPTIONS"])
+    def disable_port(self, req, **kwargs):
+        if req.method == "OPTIONS":
+            return cors_preflight()
+
+        try:
+            body = read_json_body(req)
+            require_fields(body, "dpid", "port_no")
+
+            result = self.sdn_app.topology_service.set_port_state(
+                body["dpid"],
+                body["port_no"],
+                up=False
+            )
+            return success_response(result)
+        except Exception as e:
+            self.sdn_app.logger.exception("Error en POST /api/ports/disable: %s", e)
+            return error_response(e, status=400)
+
+    @route("enable_port", "/api/ports/enable", methods=["POST", "OPTIONS"])
+    def enable_port(self, req, **kwargs):
+        if req.method == "OPTIONS":
+            return cors_preflight()
+
+        try:
+            body = read_json_body(req)
+            require_fields(body, "dpid", "port_no")
+
+            result = self.sdn_app.topology_service.set_port_state(
+                body["dpid"],
+                body["port_no"],
+                up=True
+            )
+            return success_response(result)
+        except Exception as e:
+            self.sdn_app.logger.exception("Error en POST /api/ports/enable: %s", e)
             return error_response(e, status=400)
