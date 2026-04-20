@@ -156,6 +156,21 @@ class TopologyService:
             "link_state": "enabled"
         }
 
+    def _host_number_from_mac(self, mac):
+        mac = str(mac).strip().lower()
+        parts = mac.split(":")
+        if len(parts) != 6:
+            return None
+
+        try:
+            return str(int(parts[-1], 16))
+        except ValueError:
+            return None
+    
+    def _host_name_from_mac(self, mac):
+        num = self._host_number_from_mac(mac)
+        return f"h{num}" if num is not None else None
+
     def get_topology_data(self):
         self.sync_links_inventory()
 
@@ -174,7 +189,7 @@ class TopologyService:
             sw_id = str(sw.dp.id)
             if sw_id not in seen_nodes:
                 nodes.append({
-                    "id": sw_id,
+                    "id": "S" + sw_id,
                     "type": "switch"
                 })
                 seen_nodes.add(sw_id)
@@ -184,7 +199,7 @@ class TopologyService:
             sw_id = str(dpid)
             if sw_id not in seen_nodes:
                 nodes.append({
-                    "id": sw_id,
+                    "id": "S" + sw_id,
                     "type": "switch"
                 })
                 seen_nodes.add(sw_id)
@@ -206,9 +221,12 @@ class TopologyService:
             port_stats = self.app.port_stats.get(switch_id, {}).get(switch_port, {})
             port_status = self.compute_port_status(port_stats)
 
+            host_num = self._host_number_from_mac(host.mac)
+            h_id = host_num if host_num is not None else str(host.mac)
+
             if host_id not in seen_nodes:
                 nodes.append({
-                    "id": host_id,
+                    "id": "H" + h_id,
                     "type": "host",
                     "mac": str(host.mac),
                     "ipv4": list(host.ipv4) if hasattr(host, "ipv4") else [],
@@ -220,11 +238,11 @@ class TopologyService:
             enabled = admin_state == "up"
 
             edges.append({
-                "source": host_id,
-                "target": switch_id,
+                "source-h": "H" + h_id,
+                "target-s": "S" + switch_id,
                 "type": "host-link",
-                "port": switch_port,
-                "iface": switch_iface,
+                "s-port": switch_port,
+                "s-iface": switch_iface,
                 "enabled": enabled,
                 "admin_state": admin_state,
                 "tc_sw_port": switch_tc,

@@ -11,17 +11,22 @@ class TrafficService:
 
     def _run_command(self, cmd, timeout=10):
         return run_command(cmd, timeout)
+    
+    def _host_number_from_mac(self, mac):
+        mac = str(mac).strip().lower()
+        parts = mac.split(":")
+        if len(parts) != 6:
+            return None
+        try:
+            return str(int(parts[-1], 16))
+        except ValueError:
+            return None
+
+    def _host_name_from_mac(self, mac):
+        num = self._host_number_from_mac(mac)
+        return f"h{num}" if num is not None else None
 
     def _find_host(self, host_ref):
-        """
-        host_ref puede ser:
-        - {"name": "h1"}
-        - {"mac": "..."}
-        - {"ipv4": "10.0.0.1"}
-        - {"ipv6": "..."}
-        - "h1"
-        - "10.0.0.1"
-        """
         hosts = self.app.topology_get_hosts()
 
         def build_host_data(host, fallback_name=None):
@@ -29,8 +34,10 @@ class TrafficService:
             ipv4_list = list(getattr(host, "ipv4", []))
             ipv6_list = list(getattr(host, "ipv6", []))
 
+            inferred_name = self._host_name_from_mac(mac)
+
             return {
-                "name": fallback_name,
+                "name": fallback_name or inferred_name,
                 "mac": mac,
                 "ipv4": ipv4_list,
                 "ipv6": ipv6_list,
@@ -39,7 +46,6 @@ class TrafficService:
         if isinstance(host_ref, str):
             value = host_ref.strip()
 
-            # 1) Buscar por MAC/IP en los hosts descubiertos
             for host in hosts:
                 mac = str(getattr(host, "mac", ""))
                 ipv4_list = list(getattr(host, "ipv4", []))
@@ -48,13 +54,16 @@ class TrafficService:
                 if value == mac or value in ipv4_list or value in ipv6_list:
                     return build_host_data(host)
 
-            # 2) Si parece nombre Mininet (h1, h2...), asociarlo al host descubierto
             if re.match(r"^[a-zA-Z]+\d+$", value):
                 idx_match = re.search(r"(\d+)$", value)
                 if idx_match:
-                    idx = int(idx_match.group(1)) - 1
-                    if 0 <= idx < len(hosts):
-                        return build_host_data(hosts[idx], fallback_name=value)
+                    wanted_num = idx_match.group(1)
+
+                    for host in hosts:
+                        mac = str(getattr(host, "mac", ""))
+                        host_num = self._host_number_from_mac(mac)
+                        if host_num == wanted_num:
+                            return build_host_data(host, fallback_name=value)
 
                 return {
                     "name": value,
@@ -73,16 +82,19 @@ class TrafficService:
         ipv4 = host_ref.get("ipv4")
         ipv6 = host_ref.get("ipv6")
 
-        # Si viene por nombre, intentar mapearlo a un host descubierto
         if name:
             value = str(name).strip()
 
             if re.match(r"^[a-zA-Z]+\d+$", value):
                 idx_match = re.search(r"(\d+)$", value)
                 if idx_match:
-                    idx = int(idx_match.group(1)) - 1
-                    if 0 <= idx < len(hosts):
-                        return build_host_data(hosts[idx], fallback_name=value)
+                    wanted_num = idx_match.group(1)
+
+                    for host in hosts:
+                        host_mac = str(getattr(host, "mac", ""))
+                        host_num = self._host_number_from_mac(host_mac)
+                        if host_num == wanted_num:
+                            return build_host_data(host, fallback_name=value)
 
             return {
                 "name": value,
