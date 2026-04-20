@@ -238,9 +238,10 @@ class TopologyService:
             enabled = admin_state == "up"
 
             edges.append({
-                "source-h": "H" + h_id,
-                "target-s": "S" + switch_id,
                 "type": "host-link",
+                "source-h": "H" + h_id,
+                "mac": str(host.mac),
+                "target-s": "S" + switch_id,
                 "s-port": switch_port,
                 "s-iface": switch_iface,
                 "enabled": enabled,
@@ -265,9 +266,9 @@ class TopologyService:
             link_degradation = self._combine_link_degradation(src_degradation, dst_degradation)
 
             edges.append({
-                "source": link["source"],
-                "target": link["target"],
                 "type": "switch-link",
+                "source": "S" + link["source"],
+                "target": "S" + link["target"],
                 "src_port": int(link["src_port"]),
                 "dst_port": int(link["dst_port"]),
                 "src_iface": src_iface,
