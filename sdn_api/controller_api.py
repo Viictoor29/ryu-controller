@@ -12,6 +12,7 @@ from tc_service import TCService
 from stats_service import StatsService
 from health_service import HealthService
 from traffic_service import TrafficService
+#from mininet_proxy_service import MininetProxyService
 
 import time
 
@@ -44,6 +45,7 @@ class SDNControllerAPI(app_manager.RyuApp):
         self.stats_service = StatsService(self)
         self.health_service = HealthService(self)
         self.traffic_service = TrafficService(self)
+        #self.mininet_service = MininetProxyService(self)
 
         self.monitor_thread = hub.spawn(self.stats_service.monitor_loop)
 
