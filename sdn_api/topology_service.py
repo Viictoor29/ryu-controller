@@ -41,6 +41,7 @@ class TopologyService:
         """
         for key in list(self.app.links_inventory.keys()):
             self.app.links_inventory[key]["discovered"] = False
+            self.app.links_inventory[key]["enabled"] = False
 
         links = self.app.topology_get_links()
 
