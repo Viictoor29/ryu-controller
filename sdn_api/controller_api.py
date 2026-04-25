@@ -32,6 +32,7 @@ class SDNControllerAPI(app_manager.RyuApp):
         self.start_time = time.time()
         self.datapaths = {}
         self.links_inventory = {}
+        self.host_links_inventory = {}
 
         self.port_stats = {}
         self.port_speed = {}

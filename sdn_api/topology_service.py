@@ -212,12 +212,26 @@ class TopologyService:
             self.app.logger.exception("Error obteniendo hosts con get_host(): %s", e)
             hosts = []
 
+        for key in list(self.app.host_links_inventory.keys()):
+            self.app.host_links_inventory[key]["discovered"] = False
+            self.app.host_links_inventory[key]["enabled"] = False
+
         for host in hosts:
             host_id = str(host.mac)
             switch_id = str(host.port.dpid)
             switch_port = int(host.port.port_no)
             switch_iface = self.get_interface_name(switch_id, switch_port)
             switch_tc = self.get_interface_tc_state(switch_iface)
+
+            host_link_key = (str(host.mac), str(switch_id), int(switch_port))
+
+            self.app.host_links_inventory[host_link_key] = {
+                "host_mac": str(host.mac),
+                "switch": str(switch_id),
+                "switch_port": int(switch_port),
+                "enabled": True,
+                "discovered": True
+            }
 
             port_stats = self.app.port_stats.get(switch_id, {}).get(switch_port, {})
             port_status = self.compute_port_status(port_stats)
@@ -235,8 +249,11 @@ class TopologyService:
                 })
                 seen_nodes.add(host_id)
 
+            host_link_state = self.app.host_links_inventory.get(host_link_key, {})
+
             admin_state = self.app.port_admin_state.get(switch_id, {}).get(switch_port, "up")
-            enabled = admin_state == "up"
+            enabled = host_link_state.get("enabled", False) and admin_state == "up"
+            discovered = host_link_state.get("discovered", False)
 
             edges.append({
                 "type": "host-link",
@@ -246,9 +263,50 @@ class TopologyService:
                 "s-port": switch_port,
                 "s-iface": switch_iface,
                 "enabled": enabled,
+                "discovered": discovered,
                 "admin_state": admin_state,
                 "tc_sw_port": switch_tc,
                 "degradation-link": port_status
+            })
+
+        for key, host_link in self.app.host_links_inventory.items():
+            if host_link.get("discovered", False):
+                continue
+
+            host_mac = host_link["host_mac"]
+            switch_id = host_link["switch"]
+            switch_port = host_link["switch_port"]
+            switch_iface = self.get_interface_name(switch_id, switch_port)
+
+            host_num = self._host_number_from_mac(host_mac)
+            h_id = host_num if host_num is not None else host_mac
+
+            if host_mac not in seen_nodes:
+                nodes.append({
+                    "id": "H" + h_id,
+                    "type": "host",
+                    "mac": host_mac,
+                    "ipv4": [],
+                    "ipv6": []
+                })
+                seen_nodes.add(host_mac)
+
+            edges.append({
+                "type": "host-link",
+                "source-h": "H" + h_id,
+                "mac": host_mac,
+                "target-s": "S" + switch_id,
+                "s-port": switch_port,
+                "s-iface": switch_iface,
+                "enabled": False,
+                "discovered": False,
+                "admin_state": "down",
+                "tc_sw_port": {
+                    "delay": None,
+                    "loss": None,
+                    "bandwidth": None
+                },
+                "degradation-link": "healthy"
             })
 
         # Links entre switches + estado tc + degradación
