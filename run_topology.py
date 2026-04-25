@@ -2,6 +2,7 @@
 
 import argparse
 import importlib
+import time
 
 import sys
 
@@ -97,7 +98,8 @@ def run():
 
         if not args.skip_pingall:
             print("\n*** Ejecutando pingAll para descubrir hosts/IPs...\n")
-            net.pingAll()
+
+            #net.pingAll()
 
         print("\n*** Red arrancada. Entrando en CLI de Mininet...\n")
         CLI(net)

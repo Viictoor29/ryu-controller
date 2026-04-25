@@ -42,7 +42,7 @@ class s3Topo(Topo):
         self.addLink(h69, s5)
         self.addLink(h170, s3)
 
-        #self.addLink(s1, s5)
+        self.addLink(s1, s5)
         self.addLink(s1, s3)
         self.addLink(s5, s3)
 

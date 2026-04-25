@@ -1,9 +1,20 @@
+import time
+
 from ryu.base import app_manager
 from ryu.controller import ofp_event
-from ryu.controller.handler import MAIN_DISPATCHER, DEAD_DISPATCHER, set_ev_cls
+from ryu.controller.handler import (
+    CONFIG_DISPATCHER,
+    MAIN_DISPATCHER,
+    DEAD_DISPATCHER,
+    set_ev_cls,
+)
 from ryu.ofproto import ofproto_v1_3
 from ryu.app.wsgi import WSGIApplication
 from ryu.lib import hub
+from ryu.lib import stplib
+from ryu.lib.packet import packet
+from ryu.lib.packet import ethernet
+from ryu.lib.packet import ether_types
 from ryu.topology.api import get_switch, get_link, get_host
 
 from rest_routes import SDNRestController, API_INSTANCE_NAME
@@ -13,14 +24,13 @@ from stats_service import StatsService
 from health_service import HealthService
 from traffic_service import TrafficService
 
-import time
-
 
 class SDNControllerAPI(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
 
     _CONTEXTS = {
-        "wsgi": WSGIApplication
+        "wsgi": WSGIApplication,
+        "stplib": stplib.Stp,
     }
 
     def __init__(self, *args, **kwargs):
@@ -29,8 +39,11 @@ class SDNControllerAPI(app_manager.RyuApp):
         wsgi = kwargs["wsgi"]
         wsgi.register(SDNRestController, {API_INSTANCE_NAME: self})
 
+        self.stp = kwargs["stplib"]
+
         self.start_time = time.time()
         self.datapaths = {}
+
         self.links_inventory = {}
         self.host_links_inventory = {}
 
@@ -40,6 +53,9 @@ class SDNControllerAPI(app_manager.RyuApp):
         self.flow_stats = {}
         self.monitor_interval = 5
 
+        self.mac_to_port = {}
+        self.blocked_ports = set()
+
         self.topology_service = TopologyService(self)
         self.tc_service = TCService(self)
         self.stats_service = StatsService(self)
@@ -48,10 +64,10 @@ class SDNControllerAPI(app_manager.RyuApp):
 
         self.monitor_thread = hub.spawn(self.stats_service.monitor_loop)
 
-        self.logger.info("SDNControllerAPI iniciada correctamente")
+        self.logger.info("SDNControllerAPI iniciada correctamente con STP")
 
     # =========================================================
-    # TOPOLOGY API WRAPPERS
+    # TOPOLOGY
     # =========================================================
 
     def topology_get_switches(self):
@@ -64,7 +80,94 @@ class SDNControllerAPI(app_manager.RyuApp):
         return get_host(self, None)
 
     # =========================================================
-    # EVENTOS / DATAPATHS
+    # FLOW HELPERS
+    # =========================================================
+
+    def is_port_blocked(self, dpid, port_no):
+        return (int(dpid), int(port_no)) in self.blocked_ports
+
+    def add_flow(self, datapath, priority, match, actions,
+                 buffer_id=None, idle_timeout=0, hard_timeout=0):
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+
+        inst = [
+            parser.OFPInstructionActions(
+                ofproto.OFPIT_APPLY_ACTIONS,
+                actions
+            )
+        ]
+
+        if buffer_id is not None and buffer_id != ofproto.OFP_NO_BUFFER:
+            mod = parser.OFPFlowMod(
+                datapath=datapath,
+                buffer_id=buffer_id,
+                priority=priority,
+                match=match,
+                instructions=inst,
+                idle_timeout=idle_timeout,
+                hard_timeout=hard_timeout,
+            )
+        else:
+            mod = parser.OFPFlowMod(
+                datapath=datapath,
+                priority=priority,
+                match=match,
+                instructions=inst,
+                idle_timeout=idle_timeout,
+                hard_timeout=hard_timeout,
+            )
+
+        datapath.send_msg(mod)
+
+    def delete_flows(self, datapath):
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+
+        mod = parser.OFPFlowMod(
+            datapath=datapath,
+            command=ofproto.OFPFC_DELETE,
+            out_port=ofproto.OFPP_ANY,
+            out_group=ofproto.OFPG_ANY,
+            priority=1,
+            match=parser.OFPMatch(),
+        )
+        datapath.send_msg(mod)
+
+        # reinstalar table-miss
+        match = parser.OFPMatch()
+        actions = [
+            parser.OFPActionOutput(
+                ofproto.OFPP_CONTROLLER,
+                ofproto.OFPCML_NO_BUFFER
+            )
+        ]
+        self.add_flow(datapath, 0, match, actions)
+
+    # =========================================================
+    # SWITCH FEATURES
+    # =========================================================
+
+    @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
+    def switch_features_handler(self, ev):
+        datapath = ev.msg.datapath
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+
+        match = parser.OFPMatch()
+        actions = [
+            parser.OFPActionOutput(
+                ofproto.OFPP_CONTROLLER,
+                ofproto.OFPCML_NO_BUFFER
+            )
+        ]
+
+        self.add_flow(datapath, 0, match, actions)
+
+        self.logger.info("Table-miss instalado en switch %s", datapath.id)
+
+    # =========================================================
+    # DATAPATH STATE
     # =========================================================
 
     @set_ev_cls(ofp_event.EventOFPStateChange, [MAIN_DISPATCHER, DEAD_DISPATCHER])
@@ -85,6 +188,127 @@ class SDNControllerAPI(app_manager.RyuApp):
                 del self.datapaths[dpid]
                 self.logger.info("Switch desconectado: %s", dpid)
 
+            self.mac_to_port.pop(dpid, None)
+
+    # =========================================================
+    # LEARNING SWITCH + STP
+    # =========================================================
+
+    @set_ev_cls(stplib.EventPacketIn, MAIN_DISPATCHER)
+    def packet_in_handler(self, ev):
+        msg = ev.msg
+        datapath = msg.datapath
+        parser = datapath.ofproto_parser
+        ofproto = datapath.ofproto
+
+        dpid = datapath.id
+        in_port = msg.match["in_port"]
+
+        pkt = packet.Packet(msg.data)
+        eth = pkt.get_protocols(ethernet.ethernet)
+
+        if not eth:
+            return
+
+        eth = eth[0]
+
+        # Ignorar LLDP
+        if eth.ethertype == ether_types.ETH_TYPE_LLDP:
+            return
+
+        dst = eth.dst
+        src = eth.src
+
+        # Ignorar IPv6 multicast spam
+        if dst.startswith("33:33:"):
+            return
+
+        self.mac_to_port.setdefault(dpid, {})
+        self.mac_to_port[dpid][src] = in_port
+
+        out_port = self.mac_to_port[dpid].get(dst, ofproto.OFPP_FLOOD)
+
+        self.logger.info(
+            "PACKET_IN s%s in_port=%s src=%s dst=%s out=%s",
+            dpid, in_port, src, dst, out_port
+        )
+
+        if out_port != ofproto.OFPP_FLOOD and self.is_port_blocked(dpid, out_port):
+            return
+
+        actions = [parser.OFPActionOutput(out_port)]
+
+        if out_port != ofproto.OFPP_FLOOD:
+            match = parser.OFPMatch(
+                in_port=in_port,
+                eth_src=src,
+                eth_dst=dst
+            )
+
+            if msg.buffer_id != ofproto.OFP_NO_BUFFER:
+                self.add_flow(
+                    datapath,
+                    1,
+                    match,
+                    actions,
+                    buffer_id=msg.buffer_id,
+                    idle_timeout=30
+                )
+                return
+            else:
+                self.add_flow(
+                    datapath,
+                    1,
+                    match,
+                    actions,
+                    idle_timeout=30
+                )
+
+        data = None
+        if msg.buffer_id == ofproto.OFP_NO_BUFFER:
+            data = msg.data
+
+        out = parser.OFPPacketOut(
+            datapath=datapath,
+            buffer_id=msg.buffer_id,
+            in_port=in_port,
+            actions=actions,
+            data=data
+        )
+
+        datapath.send_msg(out)
+
+    # =========================================================
+    # STP EVENTS
+    # =========================================================
+
+    @set_ev_cls(stplib.EventTopologyChange, MAIN_DISPATCHER)
+    def stp_topology_change_handler(self, ev):
+        dp = ev.dp
+        dpid = dp.id
+
+        self.logger.info("STP cambio de topología en switch %s", dpid)
+
+        self.mac_to_port.pop(dpid, None)
+
+    @set_ev_cls(stplib.EventPortStateChange, MAIN_DISPATCHER)
+    def stp_port_state_change_handler(self, ev):
+        dpid = ev.dp.id
+        port_no = ev.port_no
+        state = ev.port_state
+
+        if state == stplib.PORT_STATE_BLOCK:
+            self.blocked_ports.add((int(dpid), int(port_no)))
+        else:
+            self.blocked_ports.discard((int(dpid), int(port_no)))
+
+        self.logger.info("STP estado puerto: s%s port=%s state=%s",
+                         dpid, port_no, state)
+
+    # =========================================================
+    # STATS
+    # =========================================================
+
     @set_ev_cls(ofp_event.EventOFPPortStatsReply, MAIN_DISPATCHER)
     def port_stats_reply_handler(self, ev):
         try:
@@ -98,4 +322,3 @@ class SDNControllerAPI(app_manager.RyuApp):
             self.stats_service.handle_flow_stats_reply(ev)
         except Exception as e:
             self.logger.exception("Error procesando EventOFPFlowStatsReply: %s", e)
-            
