@@ -51,6 +51,7 @@ class SDNControllerAPI(app_manager.RyuApp):
         self.port_stats = {}
         self.port_speed = {}
         self.port_admin_state = {}
+        self.stp_port_state = {}
         self.flow_stats = {}
         self.monitor_interval = 5
 
@@ -67,10 +68,6 @@ class SDNControllerAPI(app_manager.RyuApp):
 
         self.logger.info("SDNControllerAPI iniciada correctamente con STP")
 
-    # =========================================================
-    # TOPOLOGY
-    # =========================================================
-
     def topology_get_switches(self):
         return get_switch(self, None)
 
@@ -80,10 +77,6 @@ class SDNControllerAPI(app_manager.RyuApp):
     def topology_get_hosts(self):
         return get_host(self, None)
 
-    # =========================================================
-    # FLOW HELPERS
-    # =========================================================
-
     def is_port_blocked(self, dpid, port_no):
         return (int(dpid), int(port_no)) in self.blocked_ports
 
@@ -92,36 +85,25 @@ class SDNControllerAPI(app_manager.RyuApp):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
 
-        inst = [
-            parser.OFPInstructionActions(
-                ofproto.OFPIT_APPLY_ACTIONS,
-                actions
-            )
-        ]
+        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
 
+        kwargs = {
+            "datapath": datapath,
+            "priority": priority,
+            "match": match,
+            "instructions": inst,
+            "idle_timeout": idle_timeout,
+            "hard_timeout": hard_timeout,
+        }
         if buffer_id is not None and buffer_id != ofproto.OFP_NO_BUFFER:
-            mod = parser.OFPFlowMod(
-                datapath=datapath,
-                buffer_id=buffer_id,
-                priority=priority,
-                match=match,
-                instructions=inst,
-                idle_timeout=idle_timeout,
-                hard_timeout=hard_timeout,
-            )
-        else:
-            mod = parser.OFPFlowMod(
-                datapath=datapath,
-                priority=priority,
-                match=match,
-                instructions=inst,
-                idle_timeout=idle_timeout,
-                hard_timeout=hard_timeout,
-            )
+            kwargs["buffer_id"] = buffer_id
 
-        datapath.send_msg(mod)
+        datapath.send_msg(parser.OFPFlowMod(**kwargs))
 
     def delete_flows(self, datapath):
+        if datapath is None:
+            return
+
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
 
@@ -135,7 +117,6 @@ class SDNControllerAPI(app_manager.RyuApp):
         )
         datapath.send_msg(mod)
 
-        # reinstalar table-miss
         match = parser.OFPMatch()
         actions = [
             parser.OFPActionOutput(
@@ -145,9 +126,13 @@ class SDNControllerAPI(app_manager.RyuApp):
         ]
         self.add_flow(datapath, 0, match, actions)
 
-    # =========================================================
-    # SWITCH FEATURES
-    # =========================================================
+    def flush_switch_learning(self, datapath):
+        if datapath is None:
+            return
+
+        dpid = int(datapath.id)
+        self.mac_to_port.pop(dpid, None)
+        self.delete_flows(datapath)
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -162,14 +147,8 @@ class SDNControllerAPI(app_manager.RyuApp):
                 ofproto.OFPCML_NO_BUFFER
             )
         ]
-
         self.add_flow(datapath, 0, match, actions)
-
         self.logger.info("Table-miss instalado en switch %s", datapath.id)
-
-    # =========================================================
-    # DATAPATH STATE
-    # =========================================================
 
     @set_ev_cls(ofp_event.EventOFPStateChange, [MAIN_DISPATCHER, DEAD_DISPATCHER])
     def state_change_handler(self, ev):
@@ -190,10 +169,12 @@ class SDNControllerAPI(app_manager.RyuApp):
                 self.logger.info("Switch desconectado: %s", dpid)
 
             self.mac_to_port.pop(dpid, None)
-
-    # =========================================================
-    # LEARNING SWITCH + STP
-    # =========================================================
+            self.port_admin_state.pop(str(dpid), None)
+            self.stp_port_state.pop(str(dpid), None)
+            self.blocked_ports = {
+                item for item in self.blocked_ports
+                if item[0] != dpid
+            }
 
     @set_ev_cls(stplib.EventPacketIn, MAIN_DISPATCHER)
     def packet_in_handler(self, ev):
@@ -205,22 +186,22 @@ class SDNControllerAPI(app_manager.RyuApp):
         dpid = datapath.id
         in_port = msg.match["in_port"]
 
+        if self.is_port_blocked(dpid, in_port):
+            return
+
         pkt = packet.Packet(msg.data)
         eth = pkt.get_protocols(ethernet.ethernet)
-
         if not eth:
             return
 
         eth = eth[0]
 
-        # Ignorar LLDP
         if eth.ethertype == ether_types.ETH_TYPE_LLDP:
             return
 
         dst = eth.dst
         src = eth.src
 
-        # Ignorar IPv6 multicast spam
         if dst.startswith("33:33:"):
             return
 
@@ -256,14 +237,8 @@ class SDNControllerAPI(app_manager.RyuApp):
                     idle_timeout=30
                 )
                 return
-            else:
-                self.add_flow(
-                    datapath,
-                    1,
-                    match,
-                    actions,
-                    idle_timeout=30
-                )
+
+            self.add_flow(datapath, 1, match, actions, idle_timeout=30)
 
         data = None
         if msg.buffer_id == ofproto.OFP_NO_BUFFER:
@@ -276,12 +251,7 @@ class SDNControllerAPI(app_manager.RyuApp):
             actions=actions,
             data=data
         )
-
         datapath.send_msg(out)
-
-    # =========================================================
-    # STP EVENTS
-    # =========================================================
 
     @set_ev_cls(stplib.EventTopologyChange, MAIN_DISPATCHER)
     def stp_topology_change_handler(self, ev):
@@ -289,8 +259,7 @@ class SDNControllerAPI(app_manager.RyuApp):
         dpid = dp.id
 
         self.logger.info("STP cambio de topología en switch %s", dpid)
-
-        self.mac_to_port.pop(dpid, None)
+        self.flush_switch_learning(dp)
 
     @set_ev_cls(stplib.EventPortStateChange, MAIN_DISPATCHER)
     def stp_port_state_change_handler(self, ev):
@@ -298,17 +267,23 @@ class SDNControllerAPI(app_manager.RyuApp):
         port_no = ev.port_no
         state = ev.port_state
 
+        self.stp_port_state.setdefault(str(dpid), {})
+        self.stp_port_state[str(dpid)][int(port_no)] = int(state)
+
         if state == stplib.PORT_STATE_BLOCK:
             self.blocked_ports.add((int(dpid), int(port_no)))
         else:
             self.blocked_ports.discard((int(dpid), int(port_no)))
 
-        self.logger.info("STP estado puerto: s%s port=%s state=%s",
-                         dpid, port_no, state)
+        self.flush_switch_learning(ev.dp)
 
-    # =========================================================
-    # STATS
-    # =========================================================
+        self.logger.info(
+            "STP estado puerto: s%s port=%s state=%s blocked=%s",
+            dpid,
+            port_no,
+            state,
+            self.is_port_blocked(dpid, port_no)
+        )
 
     @set_ev_cls(ofp_event.EventOFPPortStatsReply, MAIN_DISPATCHER)
     def port_stats_reply_handler(self, ev):
@@ -338,20 +313,21 @@ class SDNControllerAPI(app_manager.RyuApp):
             dst_dpid, dst_port
         )
 
-        self.links_inventory[key] = {
+        current = self.links_inventory.setdefault(key, {})
+        current.update({
             "source": src_dpid,
             "target": dst_dpid,
             "src_port": src_port,
             "dst_port": dst_port,
             "enabled": True,
             "discovered": True,
-        }
+            "last_seen": int(time.time()),
+        })
 
         self.logger.info(
             "Link añadido: s%s:%s <-> s%s:%s",
             src_dpid, src_port, dst_dpid, dst_port
         )
-
 
     @set_ev_cls(event.EventLinkDelete)
     def link_delete_handler(self, ev):
@@ -367,18 +343,15 @@ class SDNControllerAPI(app_manager.RyuApp):
             dst_dpid, dst_port
         )
 
-        if key in self.links_inventory:
-            self.links_inventory[key]["enabled"] = False
-            self.links_inventory[key]["discovered"] = False
-        else:
-            self.links_inventory[key] = {
-                "source": src_dpid,
-                "target": dst_dpid,
-                "src_port": src_port,
-                "dst_port": dst_port,
-                "enabled": False,
-                "discovered": False,
-            }
+        current = self.links_inventory.setdefault(key, {
+            "source": src_dpid,
+            "target": dst_dpid,
+            "src_port": src_port,
+            "dst_port": dst_port,
+        })
+        current["enabled"] = False
+        current["discovered"] = False
+        current["last_seen"] = int(time.time())
 
         self.logger.info(
             "Link eliminado: s%s:%s <-> s%s:%s",
@@ -398,21 +371,19 @@ class SDNControllerAPI(app_manager.RyuApp):
         reason = msg.reason
         desc = msg.desc
 
-        is_down = bool(desc.config & dp.ofproto.OFPPC_PORT_DOWN)
+        is_admin_down = bool(desc.config & dp.ofproto.OFPPC_PORT_DOWN)
         is_link_down = bool(desc.state & dp.ofproto.OFPPS_LINK_DOWN)
-
-        admin_state = "down" if is_down or is_link_down else "up"
+        admin_state = "down" if is_admin_down or is_link_down else "up"
 
         self.port_admin_state.setdefault(dpid, {})
         self.port_admin_state[dpid][port_no] = admin_state
 
-        self.logger.info(
-            "Port status: s%s port=%s state=%s reason=%s",
-            dpid, port_no, admin_state, reason
-        )
-
         if admin_state == "down":
-            for key, link in self.links_inventory.items():
+            self.blocked_ports.discard((int(dpid), int(port_no)))
+            self.stp_port_state.setdefault(dpid, {})
+            self.stp_port_state[dpid][port_no] = None
+
+            for link in self.links_inventory.values():
                 if (
                     str(link.get("source")) == dpid
                     and int(link.get("src_port")) == port_no
@@ -422,3 +393,18 @@ class SDNControllerAPI(app_manager.RyuApp):
                 ):
                     link["enabled"] = False
                     link["discovered"] = False
+
+            for host_link in self.host_links_inventory.values():
+                if (
+                    str(host_link.get("switch")) == dpid
+                    and int(host_link.get("switch_port")) == port_no
+                ):
+                    host_link["enabled"] = False
+                    host_link["discovered"] = False
+
+            self.flush_switch_learning(dp)
+
+        self.logger.info(
+            "Port status: s%s port=%s state=%s reason=%s admin_down=%s link_down=%s",
+            dpid, port_no, admin_state, reason, is_admin_down, is_link_down
+        )
