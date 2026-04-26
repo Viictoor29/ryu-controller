@@ -39,9 +39,32 @@ class TopologyService:
         No borra enlaces antiguos para poder seguir mostrando enlaces
         deshabilitados manualmente.
         """
+        valid_keys = set()
+
+        links = self.app.topology_get_links()
+
+        for link in links:
+            src_dpid = str(link.src.dpid)
+            dst_dpid = str(link.dst.dpid)
+            src_port = int(link.src.port_no)
+            dst_port = int(link.dst.port_no)
+
+            key = self.make_link_key(src_dpid, src_port, dst_dpid, dst_port)
+            valid_keys.add(key)
+
+            self.app.links_inventory[key] = {
+                "source": src_dpid,
+                "target": dst_dpid,
+                "src_port": src_port,
+                "dst_port": dst_port,
+                "enabled": True,
+                "discovered": True
+            }
+
         for key in list(self.app.links_inventory.keys()):
-            self.app.links_inventory[key]["discovered"] = False
-            self.app.links_inventory[key]["enabled"] = False
+            if key not in valid_keys:
+                self.app.links_inventory[key]["enabled"] = False
+                self.app.links_inventory[key]["discovered"] = False
 
         links = self.app.topology_get_links()
 
@@ -311,6 +334,10 @@ class TopologyService:
 
         # Links entre switches + estado tc + degradación
         for link in self.app.links_inventory.values():
+
+            if not link.get("discovered", False) and link.get("enabled", False):
+                continue
+
             src_iface = self.get_interface_name(link["source"], link["src_port"])
             dst_iface = self.get_interface_name(link["target"], link["dst_port"])
 
