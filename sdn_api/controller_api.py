@@ -16,6 +16,7 @@ from ryu.lib.packet import packet
 from ryu.lib.packet import ethernet
 from ryu.lib.packet import ether_types
 from ryu.topology.api import get_switch, get_link, get_host
+from ryu.topology import event
 
 from rest_routes import SDNRestController, API_INSTANCE_NAME
 from topology_service import TopologyService
@@ -322,3 +323,102 @@ class SDNControllerAPI(app_manager.RyuApp):
             self.stats_service.handle_flow_stats_reply(ev)
         except Exception as e:
             self.logger.exception("Error procesando EventOFPFlowStatsReply: %s", e)
+
+    @set_ev_cls(event.EventLinkAdd)
+    def link_add_handler(self, ev):
+        link = ev.link
+
+        src_dpid = str(link.src.dpid)
+        dst_dpid = str(link.dst.dpid)
+        src_port = int(link.src.port_no)
+        dst_port = int(link.dst.port_no)
+
+        key = self.topology_service.make_link_key(
+            src_dpid, src_port,
+            dst_dpid, dst_port
+        )
+
+        self.links_inventory[key] = {
+            "source": src_dpid,
+            "target": dst_dpid,
+            "src_port": src_port,
+            "dst_port": dst_port,
+            "enabled": True,
+            "discovered": True,
+        }
+
+        self.logger.info(
+            "Link añadido: s%s:%s <-> s%s:%s",
+            src_dpid, src_port, dst_dpid, dst_port
+        )
+
+
+    @set_ev_cls(event.EventLinkDelete)
+    def link_delete_handler(self, ev):
+        link = ev.link
+
+        src_dpid = str(link.src.dpid)
+        dst_dpid = str(link.dst.dpid)
+        src_port = int(link.src.port_no)
+        dst_port = int(link.dst.port_no)
+
+        key = self.topology_service.make_link_key(
+            src_dpid, src_port,
+            dst_dpid, dst_port
+        )
+
+        if key in self.links_inventory:
+            self.links_inventory[key]["enabled"] = False
+            self.links_inventory[key]["discovered"] = False
+        else:
+            self.links_inventory[key] = {
+                "source": src_dpid,
+                "target": dst_dpid,
+                "src_port": src_port,
+                "dst_port": dst_port,
+                "enabled": False,
+                "discovered": False,
+            }
+
+        self.logger.info(
+            "Link eliminado: s%s:%s <-> s%s:%s",
+            src_dpid, src_port, dst_dpid, dst_port
+        )
+
+    @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
+    def port_status_handler(self, ev):
+        msg = ev.msg
+        dp = msg.datapath
+        dpid = str(dp.id)
+        port_no = int(msg.desc.port_no)
+
+        if port_no > dp.ofproto.OFPP_MAX:
+            return
+
+        reason = msg.reason
+        desc = msg.desc
+
+        is_down = bool(desc.config & dp.ofproto.OFPPC_PORT_DOWN)
+        is_link_down = bool(desc.state & dp.ofproto.OFPPS_LINK_DOWN)
+
+        admin_state = "down" if is_down or is_link_down else "up"
+
+        self.port_admin_state.setdefault(dpid, {})
+        self.port_admin_state[dpid][port_no] = admin_state
+
+        self.logger.info(
+            "Port status: s%s port=%s state=%s reason=%s",
+            dpid, port_no, admin_state, reason
+        )
+
+        if admin_state == "down":
+            for key, link in self.links_inventory.items():
+                if (
+                    str(link.get("source")) == dpid
+                    and int(link.get("src_port")) == port_no
+                ) or (
+                    str(link.get("target")) == dpid
+                    and int(link.get("dst_port")) == port_no
+                ):
+                    link["enabled"] = False
+                    link["discovered"] = False
