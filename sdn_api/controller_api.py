@@ -98,4 +98,3 @@ class SDNControllerAPI(app_manager.RyuApp):
             self.stats_service.handle_flow_stats_reply(ev)
         except Exception as e:
             self.logger.exception("Error procesando EventOFPFlowStatsReply: %s", e)
-            
