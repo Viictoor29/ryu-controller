@@ -321,4 +321,3 @@ class SDNRestController(ControllerBase):
         except Exception as e:
             self.sdn_app.logger.exception("Error en POST /api/ports/enable: %s", e)
             return error_response(e, status=400)
-    
