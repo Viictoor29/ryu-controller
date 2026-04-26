@@ -408,3 +408,5 @@ class SDNControllerAPI(app_manager.RyuApp):
             "Port status: s%s port=%s state=%s reason=%s admin_down=%s link_down=%s",
             dpid, port_no, admin_state, reason, is_admin_down, is_link_down
         )
+
+        
