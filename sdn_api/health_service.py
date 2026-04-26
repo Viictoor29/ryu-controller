@@ -31,9 +31,19 @@ class HealthService:
 
         stats = self.app.port_stats.get(dpid, {}).get(port_no, {})
         speed = self.app.port_speed.get(dpid, {}).get(port_no, self._empty_speed())
+        admin_state = self.app.port_admin_state.get(dpid, {}).get(port_no, "up")
+        stp_state = self.app.stp_port_state.get(dpid, {}).get(port_no)
+        stp_blocked = self.app.is_port_blocked(dpid, port_no)
+
+        base_status = self._compute_port_status(stats)
+        effective_state = "down" if admin_state == "down" else ("blocked_by_stp" if stp_blocked else "up")
 
         return {
-            "status": self._compute_port_status(stats),
+            "status": base_status,
+            "effective_state": effective_state,
+            "admin_state": admin_state,
+            "stp_state": stp_state,
+            "stp_blocked": stp_blocked,
             "stats": stats,
             "speed": speed
         }
@@ -63,6 +73,7 @@ class HealthService:
             for port_no in sorted(dpid_port_stats.keys()):
                 stats = dpid_port_stats.get(port_no, {})
                 speed = dpid_port_speed.get(port_no, self._empty_speed())
+                port_health = self.get_port_health(dpid_str, port_no)
 
                 total_rx_errors += stats.get("rx_errors", 0)
                 total_tx_errors += stats.get("tx_errors", 0)
@@ -72,9 +83,7 @@ class HealthService:
 
                 ports.append({
                     "port_no": int(port_no),
-                    "status": self._compute_port_status(stats),
-                    "stats": stats,
-                    "speed": speed
+                    **port_health
                 })
 
             switch_status = "healthy"
@@ -120,6 +129,8 @@ class HealthService:
         healthy_ports = 0
         warning_ports = 0
         degraded_ports = 0
+        down_ports = 0
+        stp_blocked_ports = 0
 
         total_flows = 0
         total_bps = 0
@@ -136,6 +147,11 @@ class HealthService:
                 degraded_switches += 1
 
             for port in sw.get("ports", []):
+                if port.get("effective_state") == "down":
+                    down_ports += 1
+                if port.get("stp_blocked"):
+                    stp_blocked_ports += 1
+
                 if port.get("status") == "healthy":
                     healthy_ports += 1
                 elif port.get("status") == "warning":
@@ -160,7 +176,9 @@ class HealthService:
             "ports": {
                 "healthy": healthy_ports,
                 "warning": warning_ports,
-                "degraded": degraded_ports
+                "degraded": degraded_ports,
+                "down": down_ports,
+                "stp_blocked": stp_blocked_ports
             },
             "links": {
                 "total_inventory": links_total,
@@ -229,6 +247,7 @@ class HealthService:
                 "switches_connected": len(self.app.datapaths),
                 "port_stats_switches": len(self.app.port_stats),
                 "flow_stats_switches": len(self.app.flow_stats),
-                "links_inventory": len(self.app.links_inventory)
+                "links_inventory": len(self.app.links_inventory),
+                "stp_blocked_ports": len(self.app.blocked_ports)
             }
         }
