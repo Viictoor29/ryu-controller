@@ -210,10 +210,10 @@ class SDNControllerAPI(app_manager.RyuApp):
 
         out_port = self.mac_to_port[dpid].get(dst, ofproto.OFPP_FLOOD)
 
-        self.logger.info(
-            "PACKET_IN s%s in_port=%s src=%s dst=%s out=%s",
-            dpid, in_port, src, dst, out_port
-        )
+        #self.logger.info(
+        #    "PACKET_IN s%s in_port=%s src=%s dst=%s out=%s",
+        #    dpid, in_port, src, dst, out_port
+        #)
 
         if out_port != ofproto.OFPP_FLOOD and self.is_port_blocked(dpid, out_port):
             return
@@ -258,7 +258,7 @@ class SDNControllerAPI(app_manager.RyuApp):
         dp = ev.dp
         dpid = dp.id
 
-        self.logger.info("STP cambio de topología en switch %s", dpid)
+        #self.logger.info("STP cambio de topología en switch %s", dpid)
         self.flush_switch_learning(dp)
 
     @set_ev_cls(stplib.EventPortStateChange, MAIN_DISPATCHER)
