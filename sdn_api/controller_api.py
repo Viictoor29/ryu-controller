@@ -1,4 +1,6 @@
 import time
+import json
+import urllib.request
 
 from ryu.base import app_manager
 from ryu.controller import ofp_event
@@ -17,6 +19,7 @@ from ryu.lib.packet import ethernet
 from ryu.lib.packet import ether_types
 from ryu.topology.api import get_switch, get_link, get_host
 from ryu.topology import event
+from ryu.base.app_manager import lookup_service_brick
 
 from rest_routes import SDNRestController, API_INSTANCE_NAME
 from topology_service import TopologyService
@@ -66,7 +69,115 @@ class SDNControllerAPI(app_manager.RyuApp):
 
         self.monitor_thread = hub.spawn(self.stats_service.monitor_loop)
 
+        # STP ready / auto-pingall
+        self.stp_last_change = 0
+        self.stp_ready = False
+        self.stp_ready_since = None
+        self.stp_ready_delay = 8
+        self.stp_auto_pingall = True
+        self.stp_last_pingall = None
+        self.stp_last_pingall_result = None
+        self.stp_watch_thread = hub.spawn(self.stp_ready_watch_loop)
+
         self.logger.info("SDNControllerAPI iniciada correctamente con STP")
+
+
+    def mark_stp_changed(self):
+        self.stp_ready = False
+        self.stp_ready_since = None
+        self.stp_last_change = time.time()
+
+    def get_stp_status(self):
+        return {
+            "ready": bool(self.stp_ready),
+            "ready_since": int(self.stp_ready_since) if self.stp_ready_since else None,
+            "last_change": int(self.stp_last_change) if self.stp_last_change else None,
+            "ready_delay_seconds": self.stp_ready_delay,
+            "auto_pingall": bool(self.stp_auto_pingall),
+            "last_pingall": int(self.stp_last_pingall) if self.stp_last_pingall else None,
+            "last_pingall_result": self.stp_last_pingall_result,
+            "ports": self.stp_port_state,
+            "blocked_ports": [
+                {"dpid": dpid, "port_no": port_no}
+                for dpid, port_no in sorted(self.blocked_ports)
+            ]
+        }
+
+    def stp_ports_are_final(self):
+        for ports in self.stp_port_state.values():
+            for state in ports.values():
+                if state is None:
+                    continue
+                if int(state) not in (
+                    stplib.PORT_STATE_DISABLE,
+                    stplib.PORT_STATE_BLOCK,
+                    stplib.PORT_STATE_FORWARD
+                ):
+                    return False
+        return True
+
+
+    def stp_ready_watch_loop(self):
+        while True:
+            hub.sleep(1)
+
+            try:
+                if not self.stp_last_change:
+                    continue
+
+                quiet_for = time.time() - self.stp_last_change
+
+                if self.stp_ready:
+                    continue
+
+                if quiet_for < self.stp_ready_delay:
+                    continue
+
+                if not self.stp_ports_are_final():
+                    continue
+
+                self.stp_ready = True
+                self.stp_ready_since = time.time()
+
+                self.logger.info(
+                    "STP convergido tras %.1fs sin cambios",
+                    quiet_for
+                )
+
+                if self.stp_auto_pingall:
+                    self.logger.info(
+                        "Ejecutando pingall automático tras convergencia STP"
+                    )
+
+                    result = self.call_mininet_pingall()
+
+                    self.stp_last_pingall = time.time()
+                    self.stp_last_pingall_result = result
+
+                    data = result.get("data", result)
+
+                    success = data.get("success")
+                    failed = data.get("failed_tests")
+                    total = data.get("total_tests")
+
+                    if success is None and "packet_loss_percent" in data:
+                        success = float(data.get("packet_loss_percent", 100)) == 0.0
+
+                    self.logger.info(
+                        "Pingall STP terminado: success=%s failed=%s total=%s loss=%s",
+                        success,
+                        failed,
+                        total,
+                        data.get("packet_loss_percent")
+                    )
+
+            except Exception as e:
+                self.stp_last_pingall = time.time()
+                self.stp_last_pingall_result = {
+                    "success": False,
+                    "error": str(e)
+                }
+                self.logger.exception("Error en watcher STP/pingall: %s", e)
 
     def topology_get_switches(self):
         return get_switch(self, None)
@@ -77,6 +188,21 @@ class SDNControllerAPI(app_manager.RyuApp):
     def topology_get_hosts(self):
         return get_host(self, None)
 
+    def call_mininet_pingall(self):
+        payload = json.dumps({
+            "timeout": 30
+        }).encode("utf-8")
+
+        req = urllib.request.Request(
+            "http://127.0.0.1:8081/api/mininet/pingall",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    
     def is_port_blocked(self, dpid, port_no):
         return (int(dpid), int(port_no)) in self.blocked_ports
 
@@ -259,6 +385,7 @@ class SDNControllerAPI(app_manager.RyuApp):
         dpid = dp.id
 
         #self.logger.info("STP cambio de topología en switch %s", dpid)
+        self.mark_stp_changed()
         self.flush_switch_learning(dp)
 
     @set_ev_cls(stplib.EventPortStateChange, MAIN_DISPATCHER)
@@ -275,6 +402,7 @@ class SDNControllerAPI(app_manager.RyuApp):
         else:
             self.blocked_ports.discard((int(dpid), int(port_no)))
 
+        self.mark_stp_changed()
         self.flush_switch_learning(ev.dp)
 
         self.logger.info(
@@ -343,20 +471,31 @@ class SDNControllerAPI(app_manager.RyuApp):
             dst_dpid, dst_port
         )
 
-        current = self.links_inventory.setdefault(key, {
-            "source": src_dpid,
-            "target": dst_dpid,
-            "src_port": src_port,
-            "dst_port": dst_port,
-        })
-        current["enabled"] = False
-        current["discovered"] = False
-        current["last_seen"] = int(time.time())
+        admin_src = self.port_admin_state.get(src_dpid, {}).get(src_port)
+        admin_dst = self.port_admin_state.get(dst_dpid, {}).get(dst_port)
 
-        self.logger.info(
-            "Link eliminado: s%s:%s <-> s%s:%s",
-            src_dpid, src_port, dst_dpid, dst_port
-        )
+        if admin_src == "down" or admin_dst == "down":
+            current = self.links_inventory.setdefault(key, {
+                "source": src_dpid,
+                "target": dst_dpid,
+                "src_port": src_port,
+                "dst_port": dst_port,
+            })
+            current["enabled"] = False
+            current["discovered"] = False
+            current["last_seen"] = int(time.time())
+
+            self.logger.info(
+                "Link deshabilitado: s%s:%s <-> s%s:%s",
+                src_dpid, src_port, dst_dpid, dst_port
+            )
+        else:
+            self.links_inventory.pop(key, None)
+
+            self.logger.info(
+                "Link eliminado: s%s:%s <-> s%s:%s",
+                src_dpid, src_port, dst_dpid, dst_port
+            )
 
     @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
     def port_status_handler(self, ev):
@@ -409,4 +548,24 @@ class SDNControllerAPI(app_manager.RyuApp):
             dpid, port_no, admin_state, reason, is_admin_down, is_link_down
         )
 
-        
+    def forget_host_by_mac(self, mac):
+        mac = str(mac).lower()
+
+        # Limpia inventario propio
+        self.host_links_inventory = {
+            k: v for k, v in self.host_links_inventory.items()
+            if str(v.get("host_mac", "")).lower() != mac
+        }
+
+        # Limpia caché interna de Ryu topology/switches
+        switches_app = lookup_service_brick("switches")
+        if switches_app is not None and hasattr(switches_app, "hosts"):
+            switches_app.hosts = {
+                k: v for k, v in switches_app.hosts.items()
+                if str(getattr(v, "mac", "")).lower() != mac
+            }
+
+        return {
+            "mac": mac,
+            "state": "forgotten"
+        }

@@ -266,13 +266,20 @@ class TopologyService:
             stp_state = self._port_stp_state(switch_id, switch_port)
             stp_blocked = self.app.is_port_blocked(switch_id, switch_port)
             discovered = bool(host_link_state.get("discovered", False))
-            enabled = bool(host_link_state.get("enabled", False)) and admin_state == "up"
+            enabled = (
+                bool(host_link_state.get("enabled", False))
+                and admin_state == "up"
+                and stp_state != 0
+            )
             effective_state = self._port_effective_state(
                 switch_id,
                 switch_port,
                 discovered=discovered,
                 enabled=enabled
             )
+
+            if stp_state == 0 and admin_state == "up":
+                continue
 
             edges.append({
                 "type": "host-link",
@@ -292,7 +299,7 @@ class TopologyService:
                 "degradation-link": port_status
             })
 
-        for key, host_link in self.app.host_links_inventory.items():
+        """for key, host_link in self.app.host_links_inventory.items():
             if host_link.get("discovered", False):
                 continue
 
@@ -334,7 +341,7 @@ class TopologyService:
                     "bandwidth": None
                 },
                 "degradation-link": "healthy"
-            })
+            })"""
 
         for link in self.app.links_inventory.values():
             if not link.get("discovered", False) and link.get("enabled", False):
@@ -410,7 +417,7 @@ class TopologyService:
                 "dst_degradation": dst_degradation,
                 "degradation-link": link_degradation
             })
-
+        
         return {
             "nodes": nodes,
             "edges": edges

@@ -212,6 +212,63 @@ class TrafficService:
             "stderr": err
         }
 
+
+    def _discover_host_names(self):
+        hosts = self.app.topology_get_hosts()
+        names = []
+        seen = set()
+
+        for host in hosts:
+            mac = str(getattr(host, "mac", ""))
+            name = self._host_name_from_mac(mac)
+            if name and name not in seen:
+                names.append(name)
+                seen.add(name)
+
+        def host_sort_key(name):
+            m = re.search(r"(\d+)$", name)
+            return int(m.group(1)) if m else 0
+
+        return sorted(names, key=host_sort_key)
+
+    def generate_pingall(self, count=1, interval=0.2, timeout_per_ping=5):
+        host_names = self._discover_host_names()
+        results = []
+
+        for src in host_names:
+            for dst in host_names:
+                if src == dst:
+                    continue
+
+                try:
+                    result = self.generate_ping(
+                        src_host=src,
+                        dst_host=dst,
+                        count=count,
+                        interval=interval,
+                        timeout=timeout_per_ping
+                    )
+                except Exception as e:
+                    result = {
+                        "src_host": src,
+                        "dst_host": dst,
+                        "success": False,
+                        "error": str(e)
+                    }
+
+                results.append(result)
+
+        failed = [r for r in results if not r.get("success")]
+
+        return {
+            "hosts": host_names,
+            "host_count": len(host_names),
+            "total_tests": len(results),
+            "failed_tests": len(failed),
+            "success": len(results) > 0 and len(failed) == 0,
+            "results": results
+        }
+
     def _start_iperf_server(self, dst_name, udp=False, port=5201):
         cmd = ["bash", "-lc", f"nohup iperf {'-u' if udp else ''} -s -p {int(port)} >/tmp/iperf_server_{dst_name}_{port}.log 2>&1 & echo $!"]
         rc, out, err = self._exec_in_host(dst_name, cmd, timeout=5)
