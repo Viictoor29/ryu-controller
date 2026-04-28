@@ -289,13 +289,76 @@ class MininetAPIService:
             if name not in self.net:
                 raise ValueError(f"No existe el switch {name}")
 
-            sw = self.net[name]
+            sw = self.net.get(name)
+
+            if sw not in self.net.switches:
+                raise ValueError(f"{name} no es un switch")
+
+            removed_links = []
+            orphan_hosts = []
+
+            # Detectar hosts conectados directamente al switch
+            for link in list(self.net.links):
+                intf1 = link.intf1
+                intf2 = link.intf2
+                node1 = intf1.node
+                node2 = intf2.node
+
+                if node1 == sw and node2 in self.net.hosts:
+                    orphan_hosts.append(node2)
+                elif node2 == sw and node1 in self.net.hosts:
+                    orphan_hosts.append(node1)
+
+            # Evitar duplicados
+            orphan_hosts = list({host.name: host for host in orphan_hosts}.values())
+
+            # Borrar todos los enlaces del switch
             for intf in list(sw.intfList()):
                 link = getattr(intf, "link", None)
                 if link:
+                    removed_links.append(str(link))
                     self.net.delLink(link)
+
+            deleted_hosts = []
+
+            # Borrar hosts que estaban colgados del switch
+            for host in orphan_hosts:
+                if host.name not in self.net:
+                    continue
+
+                try:
+                    mac = host.MAC()
+                except Exception:
+                    mac = None
+
+                if not mac:
+                    mac = self.mac_from_host_name(host.name)
+
+                ryu_result = None
+                if mac:
+                    try:
+                        ryu_result = self.notify_ryu_forget_host(mac)
+                    except Exception as e:
+                        ryu_result = str(e)
+
+                self.net.delHost(host)
+
+                deleted_hosts.append({
+                    "name": host.name,
+                    "mac": mac,
+                    "ryu_forget_result": ryu_result
+                })
+
             self.net.delSwitch(sw)
-            return {"name": name, "state": "deleted"}
+
+            return {
+                "name": name,
+                "removed_links": removed_links,
+                "removed_links_count": len(removed_links),
+                "deleted_hosts_count": len(deleted_hosts),
+                "deleted_hosts": deleted_hosts,
+                "state": "deleted"
+            }
 
     def ping_all(self):
         with self.lock:

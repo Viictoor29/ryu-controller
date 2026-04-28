@@ -59,12 +59,7 @@ class TopologyService:
         return "up"
 
     def sync_links_inventory(self):
-        """
-        Sincroniza el inventario con los enlaces descubiertos por Ryu.
-        No borra enlaces antiguos para poder seguir mostrando enlaces caídos.
-        """
         valid_keys = set()
-
         links = self.app.topology_get_links()
 
         for link in links:
@@ -203,6 +198,8 @@ class TopologyService:
         edges = []
         seen_nodes = set()
 
+        active_switch_ids = {str(dpid) for dpid in self.app.datapaths.keys()}
+
         try:
             switches = self.app.topology_get_switches()
         except Exception as e:
@@ -211,6 +208,10 @@ class TopologyService:
 
         for sw in switches:
             sw_id = str(sw.dp.id)
+
+            if sw_id not in active_switch_ids:
+                continue
+
             if sw_id not in seen_nodes:
                 nodes.append({
                     "id": "S" + sw_id,
@@ -220,6 +221,7 @@ class TopologyService:
 
         for dpid in sorted(self.app.datapaths.keys()):
             sw_id = str(dpid)
+
             if sw_id not in seen_nodes:
                 nodes.append({
                     "id": "S" + sw_id,
@@ -234,7 +236,12 @@ class TopologyService:
             filtered_hosts = []
 
             for host in hosts:
-                key = (str(host.port.dpid), int(host.port.port_no))
+                switch_id = str(host.port.dpid)
+
+                if switch_id not in active_switch_ids:
+                    continue
+
+                key = (switch_id, int(host.port.port_no))
                 ipv4_list = list(host.ipv4) if hasattr(host, "ipv4") else []
 
                 if key not in seen_host_ports:
@@ -260,14 +267,22 @@ class TopologyService:
             self.app.host_links_inventory[key]["enabled"] = False
 
         for host in hosts:
-
             host_mac = str(host.mac).lower()
 
-            if host_mac in getattr(self.app, "forgotten_host_macs", set()):
+            if host_mac in getattr(self.app, "deleted_host_macs", set()):
+                continue
+            
+            host_id = str(host.mac)
+
+            ipv4_list = list(host.ipv4) if hasattr(host, "ipv4") else []
+            if not ipv4_list:
                 continue
 
-            host_id = str(host.mac)
             switch_id = str(host.port.dpid)
+
+            if switch_id not in active_switch_ids:
+                continue
+
             switch_port = int(host.port.port_no)
             switch_iface = self.get_interface_name(switch_id, switch_port)
             switch_tc = self.get_interface_tc_state(switch_iface)
@@ -293,7 +308,7 @@ class TopologyService:
                     "id": "H" + h_id,
                     "type": "host",
                     "mac": str(host.mac),
-                    "ipv4": list(host.ipv4) if hasattr(host, "ipv4") else [],
+                    "ipv4": ipv4_list,
                     "ipv6": list(host.ipv6) if hasattr(host, "ipv6") else []
                 })
                 seen_nodes.add(host_id)
@@ -302,12 +317,14 @@ class TopologyService:
             admin_state = self._port_admin_state(switch_id, switch_port)
             stp_state = self._port_stp_state(switch_id, switch_port)
             stp_blocked = self.app.is_port_blocked(switch_id, switch_port)
+
             discovered = bool(host_link_state.get("discovered", False))
             enabled = (
                 bool(host_link_state.get("enabled", False))
                 and admin_state == "up"
                 and stp_state != 0
             )
+
             effective_state = self._port_effective_state(
                 switch_id,
                 switch_port,
@@ -316,6 +333,9 @@ class TopologyService:
             )
 
             if stp_state == 0 and admin_state == "up":
+                continue
+
+            if not discovered or not enabled:
                 continue
 
             edges.append({
@@ -336,56 +356,19 @@ class TopologyService:
                 "degradation-link": port_status
             })
 
-        """for key, host_link in self.app.host_links_inventory.items():
-            if host_link.get("discovered", False):
+        for link in self.app.links_inventory.values():
+            if not link.get("enabled", False):
                 continue
 
-            host_mac = host_link["host_mac"]
-            switch_id = host_link["switch"]
-            switch_port = host_link["switch_port"]
-            switch_iface = self.get_interface_name(switch_id, switch_port)
-
-            host_num = self._host_number_from_mac(host_mac)
-            h_id = host_num if host_num is not None else host_mac
-
-            if host_mac not in seen_nodes:
-                nodes.append({
-                    "id": "H" + h_id,
-                    "type": "host",
-                    "mac": host_mac,
-                    "ipv4": [],
-                    "ipv6": []
-                })
-                seen_nodes.add(host_mac)
-
-            edges.append({
-                "type": "host-link",
-                "source-h": "H" + h_id,
-                "mac": host_mac,
-                "target-s": "S" + switch_id,
-                "s-port": switch_port,
-                "s-iface": switch_iface,
-                "enabled": False,
-                "forwarding": False,
-                "discovered": False,
-                "state": "down",
-                "admin_state": "down",
-                "stp_state": None,
-                "stp_blocked": False,
-                "tc_sw_port": {
-                    "delay": None,
-                    "loss": None,
-                    "bandwidth": None
-                },
-                "degradation-link": "healthy"
-            })"""
-
-        for link in self.app.links_inventory.values():
-            if not link.get("discovered", False) and link.get("enabled", False):
+            if not link.get("discovered", False):
                 continue
 
             src_dpid = str(link["source"])
             dst_dpid = str(link["target"])
+
+            if src_dpid not in active_switch_ids or dst_dpid not in active_switch_ids:
+                continue
+
             src_port = int(link["src_port"])
             dst_port = int(link["dst_port"])
 
@@ -404,8 +387,10 @@ class TopologyService:
 
             src_admin = self._port_admin_state(src_dpid, src_port)
             dst_admin = self._port_admin_state(dst_dpid, dst_port)
+
             src_stp_state = self._port_stp_state(src_dpid, src_port)
             dst_stp_state = self._port_stp_state(dst_dpid, dst_port)
+
             src_blocked = self.app.is_port_blocked(src_dpid, src_port)
             dst_blocked = self.app.is_port_blocked(dst_dpid, dst_port)
 
@@ -477,7 +462,7 @@ class TopologyService:
                 "dst_degradation": dst_degradation,
                 "degradation-link": link_degradation
             })
-        
+
         return {
             "nodes": nodes,
             "edges": edges
