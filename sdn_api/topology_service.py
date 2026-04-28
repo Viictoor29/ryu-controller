@@ -41,12 +41,21 @@ class TopologyService:
 
     def _port_effective_state(self, dpid, port_no, discovered=True, enabled=True):
         admin_state = self._port_admin_state(dpid, port_no)
+        stp_state = self._port_stp_state(dpid, port_no)
         blocked = self.app.is_port_blocked(dpid, port_no)
 
         if not discovered or not enabled or admin_state == "down":
             return "down"
-        if blocked:
+
+        if stp_state is None:
+            return "stp_unknown"
+
+        if blocked or int(stp_state) == 1:
             return "blocked_by_stp"
+
+        if int(stp_state) in (2, 3):
+            return "stp_converging"
+
         return "up"
 
     def sync_links_inventory(self):
@@ -220,6 +229,28 @@ class TopologyService:
 
         try:
             hosts = self.app.topology_get_hosts()
+
+            seen_host_ports = {}
+            filtered_hosts = []
+
+            for host in hosts:
+                key = (str(host.port.dpid), int(host.port.port_no))
+                ipv4_list = list(host.ipv4) if hasattr(host, "ipv4") else []
+
+                if key not in seen_host_ports:
+                    seen_host_ports[key] = host
+                    filtered_hosts.append(host)
+                    continue
+
+                old = seen_host_ports[key]
+                old_ipv4 = list(old.ipv4) if hasattr(old, "ipv4") else []
+
+                if ipv4_list and not old_ipv4:
+                    filtered_hosts.remove(old)
+                    seen_host_ports[key] = host
+                    filtered_hosts.append(host)
+
+            hosts = filtered_hosts
         except Exception as e:
             self.app.logger.exception("Error obteniendo hosts con get_host(): %s", e)
             hosts = []
@@ -229,6 +260,12 @@ class TopologyService:
             self.app.host_links_inventory[key]["enabled"] = False
 
         for host in hosts:
+
+            host_mac = str(host.mac).lower()
+
+            if host_mac in getattr(self.app, "forgotten_host_macs", set()):
+                continue
+
             host_id = str(host.mac)
             switch_id = str(host.port.dpid)
             switch_port = int(host.port.port_no)
@@ -374,18 +411,41 @@ class TopologyService:
 
             discovered = bool(link.get("discovered", False))
             inventory_enabled = bool(link.get("enabled", False))
+
             physical_up = (
                 discovered
                 and inventory_enabled
                 and src_admin == "up"
                 and dst_admin == "up"
             )
-            forwarding = physical_up and not src_blocked and not dst_blocked
 
-            if not physical_up:
+            src_effective_state = self._port_effective_state(
+                src_dpid,
+                src_port,
+                discovered=discovered,
+                enabled=inventory_enabled
+            )
+
+            dst_effective_state = self._port_effective_state(
+                dst_dpid,
+                dst_port,
+                discovered=discovered,
+                enabled=inventory_enabled
+            )
+
+            forwarding = (
+                src_effective_state == "up"
+                and dst_effective_state == "up"
+            )
+
+            if src_effective_state == "down" or dst_effective_state == "down":
                 state = "down"
-            elif not forwarding:
+            elif "blocked_by_stp" in (src_effective_state, dst_effective_state):
                 state = "blocked_by_stp"
+            elif "stp_unknown" in (src_effective_state, dst_effective_state):
+                state = "stp_unknown"
+            elif "stp_converging" in (src_effective_state, dst_effective_state):
+                state = "stp_converging"
             else:
                 state = "up"
 

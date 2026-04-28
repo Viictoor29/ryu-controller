@@ -60,6 +60,7 @@ class SDNControllerAPI(app_manager.RyuApp):
 
         self.mac_to_port = {}
         self.blocked_ports = set()
+        self.forgotten_host_macs = set()
 
         self.topology_service = TopologyService(self)
         self.tc_service = TCService(self)
@@ -149,6 +150,7 @@ class SDNControllerAPI(app_manager.RyuApp):
                         "Ejecutando pingall automático tras convergencia STP"
                     )
 
+                    hub.sleep(3)
                     result = self.call_mininet_pingall()
 
                     self.stp_last_pingall = time.time()
@@ -297,10 +299,29 @@ class SDNControllerAPI(app_manager.RyuApp):
             self.mac_to_port.pop(dpid, None)
             self.port_admin_state.pop(str(dpid), None)
             self.stp_port_state.pop(str(dpid), None)
+
             self.blocked_ports = {
                 item for item in self.blocked_ports
                 if item[0] != dpid
             }
+
+            for key in list(self.links_inventory.keys()):
+                link = self.links_inventory[key]
+                if str(link.get("source")) == str(dpid) or str(link.get("target")) == str(dpid):
+                    link["enabled"] = False
+                    link["discovered"] = False
+                    link["state"] = "switch_removed"
+                    link["last_seen"] = int(time.time())
+
+            for key, host_link in list(self.host_links_inventory.items()):
+                if str(host_link.get("switch")) == str(dpid):
+                    mac = host_link.get("host_mac")
+                    if mac:
+                        self.forget_host_by_mac(mac)
+                    self.host_links_inventory.pop(key, None)
+
+            self.cleanup_stp_ports_not_in_topology()
+            self.mark_stp_changed()
 
     @set_ev_cls(stplib.EventPacketIn, MAIN_DISPATCHER)
     def packet_in_handler(self, ev):
@@ -325,8 +346,12 @@ class SDNControllerAPI(app_manager.RyuApp):
         if eth.ethertype == ether_types.ETH_TYPE_LLDP:
             return
 
-        dst = eth.dst
-        src = eth.src
+        dst = eth.dst.lower()
+        src = eth.src.lower()
+
+        if src in self.forgotten_host_macs:
+            self.forgotten_host_macs.discard(src)
+            self.logger.info("Host reaprendido tras tráfico: %s", src)
 
         if dst.startswith("33:33:"):
             return
@@ -457,6 +482,60 @@ class SDNControllerAPI(app_manager.RyuApp):
             src_dpid, src_port, dst_dpid, dst_port
         )
 
+        self.mark_stp_changed()
+
+    def reconcile_stp_with_current_topology(self):
+        """
+        Limpia estados STP obsoletos tras cambios dinámicos de topología.
+        Si un switch ya no tiene ciclos y tiene puertos bloqueados, los desbloquea
+        a nivel lógico del controlador.
+        """
+        try:
+            links = self.topology_get_links()
+
+            active_ports = set()
+            degree = {}
+
+            for link in links:
+                src = (int(link.src.dpid), int(link.src.port_no))
+                dst = (int(link.dst.dpid), int(link.dst.port_no))
+
+                active_ports.add(src)
+                active_ports.add(dst)
+
+                degree[src[0]] = degree.get(src[0], 0) + 1
+                degree[dst[0]] = degree.get(dst[0], 0) + 1
+
+            changed = False
+
+            for dpid, port_no in list(self.blocked_ports):
+                # Si el puerto bloqueado ya no aparece en enlaces activos, limpiarlo.
+                if (dpid, port_no) not in active_ports:
+                    self.blocked_ports.discard((dpid, port_no))
+                    self.stp_port_state.setdefault(str(dpid), {})
+                    self.stp_port_state[str(dpid)][port_no] = None
+                    changed = True
+                    continue
+
+                # Si el switch solo tiene un enlace switch-switch activo, no tiene sentido
+                # mantenerlo bloqueado: no puede cerrar un ciclo él solo.
+                admin_state = self.port_admin_state.get(str(dpid), {}).get(int(port_no), "up")
+                if degree.get(dpid, 0) <= 1 and admin_state == "up":
+                    self.blocked_ports.discard((dpid, port_no))
+                    self.stp_port_state.setdefault(str(dpid), {})
+                    self.stp_port_state[str(dpid)][port_no] = stplib.PORT_STATE_FORWARD
+                    changed = True
+
+            if changed:
+                for dp in list(self.datapaths.values()):
+                    self.flush_switch_learning(dp)
+
+                self.mark_stp_changed()
+                self.logger.info("Reconciliación STP/topología aplicada")
+
+        except Exception as e:
+            self.logger.exception("Error reconciliando STP con topología: %s", e)
+
     @set_ev_cls(event.EventLinkDelete)
     def link_delete_handler(self, ev):
         link = ev.link
@@ -484,18 +563,27 @@ class SDNControllerAPI(app_manager.RyuApp):
             current["enabled"] = False
             current["discovered"] = False
             current["last_seen"] = int(time.time())
-
-            self.logger.info(
-                "Link deshabilitado: s%s:%s <-> s%s:%s",
-                src_dpid, src_port, dst_dpid, dst_port
-            )
         else:
             self.links_inventory.pop(key, None)
 
-            self.logger.info(
-                "Link eliminado: s%s:%s <-> s%s:%s",
-                src_dpid, src_port, dst_dpid, dst_port
-            )
+        # limpiar el propio enlace eliminado
+        self.blocked_ports.discard((int(src_dpid), int(src_port)))
+        self.blocked_ports.discard((int(dst_dpid), int(dst_port)))
+
+        self.stp_port_state.setdefault(src_dpid, {})
+        self.stp_port_state.setdefault(dst_dpid, {})
+        self.stp_port_state[src_dpid][src_port] = None
+        self.stp_port_state[dst_dpid][dst_port] = None
+
+        self.reconcile_stp_with_current_topology()
+        self.mark_stp_changed()
+
+        self.cleanup_stp_ports_not_in_topology()
+
+        self.logger.info(
+            "Link eliminado/deshabilitado: s%s:%s <-> s%s:%s",
+            src_dpid, src_port, dst_dpid, dst_port
+        )
 
     @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
     def port_status_handler(self, ev):
@@ -542,7 +630,10 @@ class SDNControllerAPI(app_manager.RyuApp):
                     host_link["discovered"] = False
 
             self.flush_switch_learning(dp)
+            self.cleanup_stp_ports_not_in_topology()
 
+        self.mark_stp_changed()
+        
         self.logger.info(
             "Port status: s%s port=%s state=%s reason=%s admin_down=%s link_down=%s",
             dpid, port_no, admin_state, reason, is_admin_down, is_link_down
@@ -551,21 +642,40 @@ class SDNControllerAPI(app_manager.RyuApp):
     def forget_host_by_mac(self, mac):
         mac = str(mac).lower()
 
-        # Limpia inventario propio
+        self.forgotten_host_macs.add(mac)
+
         self.host_links_inventory = {
             k: v for k, v in self.host_links_inventory.items()
             if str(v.get("host_mac", "")).lower() != mac
         }
 
-        # Limpia caché interna de Ryu topology/switches
-        switches_app = lookup_service_brick("switches")
-        if switches_app is not None and hasattr(switches_app, "hosts"):
-            switches_app.hosts = {
-                k: v for k, v in switches_app.hosts.items()
-                if str(getattr(v, "mac", "")).lower() != mac
-            }
+        self.logger.info("Host marcado como eliminado/oculto: %s", mac)
 
         return {
             "mac": mac,
             "state": "forgotten"
         }
+
+    def cleanup_stp_ports_not_in_topology(self):
+        try:
+            active_ports = set()
+
+            for link in self.topology_get_links():
+                active_ports.add((str(link.src.dpid), int(link.src.port_no)))
+                active_ports.add((str(link.dst.dpid), int(link.dst.port_no)))
+
+            for host in self.topology_get_hosts():
+                active_ports.add((str(host.port.dpid), int(host.port.port_no)))
+
+            for dpid in list(self.stp_port_state.keys()):
+                for port_no in list(self.stp_port_state[dpid].keys()):
+                    if (str(dpid), int(port_no)) not in active_ports:
+                        self.stp_port_state[dpid].pop(port_no, None)
+                        self.blocked_ports.discard((int(dpid), int(port_no)))
+
+                if not self.stp_port_state.get(dpid):
+                    self.stp_port_state.pop(dpid, None)
+
+        except Exception as e:
+            self.logger.exception("Error limpiando puertos STP obsoletos: %s", e)
+
