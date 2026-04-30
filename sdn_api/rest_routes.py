@@ -261,6 +261,36 @@ class SDNRestController(ControllerBase):
             self.sdn_app.logger.exception("Error en POST /api/traffic/ping: %s", e)
             return error_response(e, status=400)
 
+
+    @route("traffic_pingall", "/api/traffic/pingall", methods=["POST", "OPTIONS"])
+    def traffic_pingall(self, req, **kwargs):
+        if req.method == "OPTIONS":
+            return cors_preflight()
+
+        try:
+            body = read_json_body(req)
+
+            result = self.sdn_app.traffic_service.generate_pingall(
+                count=body.get("count", 1),
+                interval=body.get("interval", 0.2),
+                timeout_per_ping=body.get("timeout_per_ping", 5)
+            )
+            return success_response(result)
+        except Exception as e:
+            self.sdn_app.logger.exception("Error en POST /api/traffic/pingall: %s", e)
+            return error_response(e, status=400)
+
+    @route("stp_status", "/api/stp/status", methods=["GET", "OPTIONS"])
+    def stp_status(self, req, **kwargs):
+        if req.method == "OPTIONS":
+            return cors_preflight()
+
+        try:
+            return success_response(self.sdn_app.get_stp_status())
+        except Exception as e:
+            self.sdn_app.logger.exception("Error en GET /api/stp/status: %s", e)
+            return error_response(e, status=500)
+
     @route("traffic_iperf", "/api/traffic/iperf", methods=["POST", "OPTIONS"])
     def traffic_iperf(self, req, **kwargs):
         if req.method == "OPTIONS":
@@ -321,3 +351,34 @@ class SDNRestController(ControllerBase):
         except Exception as e:
             self.sdn_app.logger.exception("Error en POST /api/ports/enable: %s", e)
             return error_response(e, status=400)
+    
+    @route("forget_link", "/api/links/forget", methods=["POST", "OPTIONS"])
+    def forget_link(self, req, **kwargs):
+        if req.method == "OPTIONS":
+            return cors_preflight()
+
+        try:
+            body = read_json_body(req)
+            require_fields(body, "src", "dst")
+
+            result = self.sdn_app.topology_service.forget_link(
+                body["src"],
+                body["dst"]
+            )
+            return success_response(result)
+        except Exception as e:
+            self.sdn_app.logger.exception("Error en POST /api/links/forget: %s", e)
+            return error_response(e, status=400)
+
+    @route("forget_host", "/api/hosts/forget/{mac}", methods=["DELETE", "OPTIONS"])
+    def forget_host(self, req, **kwargs):
+        if req.method == "OPTIONS":
+            return cors_preflight()
+
+        try:
+            result = self.sdn_app.forget_host_by_mac(kwargs["mac"])
+            return success_response(result)
+        except Exception as e:
+            self.sdn_app.logger.exception("Error olvidando host: %s", e)
+            return error_response(e, status=400)
+        

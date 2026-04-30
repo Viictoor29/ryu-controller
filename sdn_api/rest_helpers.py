@@ -88,15 +88,50 @@ def empty_speed():
     }
 
 
-def compute_port_status(stats):
-    total_errors = stats.get("rx_errors", 0) + stats.get("tx_errors", 0)
-    total_drops = stats.get("rx_dropped", 0) + stats.get("tx_dropped", 0)
+def compute_port_status(
+    stats,
+    drop_threshold=10,
+    drop_ratio_threshold=0.01,
+):
+    """
+    Estado lógico del puerto.
+
+    - degraded: hay errores reales.
+    - warning: hay pérdidas significativas.
+    - healthy: sin errores, o solo drops pequeños/transitorios.
+
+    Esto evita marcar como warning enlaces recién creados por 1-2 drops
+    producidos durante STP/LLDP/ARP/convergencia inicial.
+    """
+    rx_errors = stats.get("rx_errors", 0)
+    tx_errors = stats.get("tx_errors", 0)
+    rx_dropped = stats.get("rx_dropped", 0)
+    tx_dropped = stats.get("tx_dropped", 0)
+    rx_packets = stats.get("rx_packets", 0)
+    tx_packets = stats.get("tx_packets", 0)
+
+    total_errors = rx_errors + tx_errors
+    total_drops = rx_dropped + tx_dropped
+    total_packets = rx_packets + tx_packets
 
     if total_errors > 0:
         return "degraded"
-    if total_drops > 0:
-        return "warning"
-    return "healthy"
+
+    if total_drops <= 0:
+        return "healthy"
+
+    # Ignorar drops pequeños típicos al crear enlaces/switches.
+    if total_drops < drop_threshold:
+        return "healthy"
+
+    # Si hay mucho tráfico y el porcentaje de drops es insignificante,
+    # tampoco lo marcamos como warning.
+    if total_packets > 0:
+        drop_ratio = total_drops / max(total_packets + total_drops, 1)
+        if drop_ratio < drop_ratio_threshold:
+            return "healthy"
+
+    return "warning"
 
 
 def compute_overall_status(degraded_switches, warning_switches, degraded_ports, warning_ports):
