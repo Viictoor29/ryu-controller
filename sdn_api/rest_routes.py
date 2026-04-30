@@ -352,6 +352,24 @@ class SDNRestController(ControllerBase):
             self.sdn_app.logger.exception("Error en POST /api/ports/enable: %s", e)
             return error_response(e, status=400)
     
+    @route("forget_link", "/api/links/forget", methods=["POST", "OPTIONS"])
+    def forget_link(self, req, **kwargs):
+        if req.method == "OPTIONS":
+            return cors_preflight()
+
+        try:
+            body = read_json_body(req)
+            require_fields(body, "src", "dst")
+
+            result = self.sdn_app.topology_service.forget_link(
+                body["src"],
+                body["dst"]
+            )
+            return success_response(result)
+        except Exception as e:
+            self.sdn_app.logger.exception("Error en POST /api/links/forget: %s", e)
+            return error_response(e, status=400)
+
     @route("forget_host", "/api/hosts/forget/{mac}", methods=["DELETE", "OPTIONS"])
     def forget_host(self, req, **kwargs):
         if req.method == "OPTIONS":

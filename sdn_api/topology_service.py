@@ -59,6 +59,13 @@ class TopologyService:
         return "up"
 
     def sync_links_inventory(self):
+        """
+        Sincroniza el inventario con los enlaces descubiertos por Ryu.
+
+        Diferencia importante:
+        - disabled/manual_disabled: enlace apagado desde API, debe seguir visible.
+        - deleted: enlace eliminado físicamente, no debe mostrarse en topología.
+        """
         valid_keys = set()
         links = self.app.topology_get_links()
 
@@ -79,12 +86,24 @@ class TopologyService:
                 "dst_port": dst_port,
                 "enabled": True,
                 "discovered": True,
+                "state": "up",
+                "manual_disabled": False,
             })
 
         for key in list(self.app.links_inventory.keys()):
-            if key not in valid_keys:
-                self.app.links_inventory[key]["enabled"] = False
-                self.app.links_inventory[key]["discovered"] = False
+            if key in valid_keys:
+                continue
+
+            link = self.app.links_inventory[key]
+
+            if link.get("state") == "disabled" or link.get("manual_disabled"):
+                link["enabled"] = False
+                link["discovered"] = True
+                link["state"] = "disabled"
+            elif link.get("state") != "deleted":
+                link["enabled"] = False
+                link["discovered"] = False
+                link["state"] = "deleted"
 
     def set_link_inventory_state(self, src, dst, enabled):
         src = self.normalize_endpoint(src, "src")
@@ -100,9 +119,38 @@ class TopologyService:
             "target": dst["dpid"],
             "src_port": src["port_no"],
             "dst_port": dst["port_no"],
-            "discovered": False
         })
+
+        current["source"] = src["dpid"]
+        current["target"] = dst["dpid"]
+        current["src_port"] = src["port_no"]
+        current["dst_port"] = dst["port_no"]
         current["enabled"] = bool(enabled)
+        current["discovered"] = True
+        current["state"] = "up" if enabled else "disabled"
+        current["manual_disabled"] = not bool(enabled)
+
+    def forget_link(self, src, dst):
+        """
+        Elimina un enlace del inventario visual.
+        Debe usarse cuando el enlace se borra físicamente de Mininet.
+        """
+        src = self.normalize_endpoint(src, "src")
+        dst = self.normalize_endpoint(dst, "dst")
+
+        key = self.make_link_key(
+            src["dpid"], src["port_no"],
+            dst["dpid"], dst["port_no"]
+        )
+
+        removed = self.app.links_inventory.pop(key, None)
+
+        return {
+            "src": src,
+            "dst": dst,
+            "removed_from_inventory": removed is not None,
+            "state": "deleted"
+        }
 
     def set_port_state(self, dpid, port_no, up=True):
         dpid = int(dpid)
@@ -357,10 +405,12 @@ class TopologyService:
             })
 
         for link in self.app.links_inventory.values():
-            if not link.get("enabled", False):
+            inventory_state = link.get("state", "up")
+
+            if inventory_state in ("deleted", "switch_removed"):
                 continue
 
-            if not link.get("discovered", False):
+            if not link.get("discovered", False) and inventory_state != "disabled":
                 continue
 
             src_dpid = str(link["source"])
@@ -446,6 +496,8 @@ class TopologyService:
                 "forwarding": forwarding,
                 "discovered": discovered,
                 "state": state,
+                "inventory_state": inventory_state,
+                "manual_disabled": bool(link.get("manual_disabled", False)),
                 "admin_state": {
                     "src": src_admin,
                     "dst": dst_admin

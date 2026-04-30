@@ -212,11 +212,67 @@ class MininetAPIService:
                 raise ValueError(f"No existe enlace entre {node1} y {node2}")
 
             removed = []
+            ryu_forget_results = []
+
             for link in list(links):
-                self.net.delLink(link)
+                ep1 = self.endpoint_from_intf(link.intf1)
+                ep2 = self.endpoint_from_intf(link.intf2)
+
                 removed.append(str(link))
-            return {"removed": removed}
+                self.net.delLink(link)
+
+                if ep1 and ep2:
+                    try:
+                        ryu_result = self.notify_ryu_forget_link(ep1, ep2)
+                        ryu_forget_results.append({
+                            "src": ep1,
+                            "dst": ep2,
+                            "result": ryu_result,
+                        })
+                    except Exception as e:
+                        print(f"[mininet-api] Error avisando a Ryu para borrar link: {e}")
+                        ryu_forget_results.append({
+                            "src": ep1,
+                            "dst": ep2,
+                            "error": str(e),
+                        })
+
+            return {
+                "removed": removed,
+                "ryu_forget_results": ryu_forget_results,
+            }
         
+    def endpoint_from_intf(self, intf):
+        intf_name = str(intf)
+
+        m = re.match(r"^s(\d+)-eth(\d+)$", intf_name)
+        if not m:
+            return None
+
+        return {
+            "dpid": m.group(1),
+            "port_no": int(m.group(2))
+        }
+
+    def notify_ryu_forget_link(self, src, dst):
+        payload = json.dumps({
+            "src": src,
+            "dst": dst
+        }).encode("utf-8")
+
+        req = urllib.request.Request(
+            f"{self.ryu_api_url}/api/links/forget",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            body = resp.read().decode("utf-8")
+            if resp.status < 200 or resp.status >= 300:
+                raise RuntimeError(f"Ryu respondió {resp.status}: {body}")
+            return body
+
     def notify_ryu_forget_host(self, mac):
         if not mac:
             raise RuntimeError("No tengo MAC del host, no puedo avisar a Ryu")

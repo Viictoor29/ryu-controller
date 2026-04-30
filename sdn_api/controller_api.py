@@ -319,7 +319,9 @@ class SDNControllerAPI(app_manager.RyuApp):
                     or str(link.get("target")) == str(dpid)
                 ):
                     link["enabled"] = False
-                    link["discovered"] = False
+                    link["discovered"] = True
+                    link["state"] = "disabled"
+                    link["manual_disabled"] = True
                     link["state"] = "switch_removed"
                     link["last_seen"] = int(time.time())
 
@@ -475,6 +477,8 @@ class SDNControllerAPI(app_manager.RyuApp):
             "dst_port": dst_port,
             "enabled": True,
             "discovered": True,
+            "state": "up",
+            "manual_disabled": False,
             "last_seen": int(time.time()),
         })
 
@@ -505,15 +509,28 @@ class SDNControllerAPI(app_manager.RyuApp):
             "src_port": src_port,
             "dst_port": dst_port,
         })
-        current["enabled"] = False
-        current["discovered"] = False
+
+        if current.get("state") == "disabled" or current.get("manual_disabled"):
+            current["enabled"] = False
+            current["discovered"] = True
+            current["state"] = "disabled"
+        else:
+            current["enabled"] = False
+            current["discovered"] = False
+            current["state"] = "deleted"
+
         current["last_seen"] = int(time.time())
 
         self.mark_stp_changed()
 
         self.logger.info(
-            "Link eliminado: s%s:%s <-> s%s:%s",
-            src_dpid, src_port, dst_dpid, dst_port,
+            "Link eliminado: s%s:%s <-> s%s:%s state=%s manual_disabled=%s",
+            src_dpid,
+            src_port,
+            dst_dpid,
+            dst_port,
+            current.get("state"),
+            current.get("manual_disabled"),
         )
 
     @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)

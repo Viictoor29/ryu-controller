@@ -34,7 +34,7 @@ def run():
     parser.add_argument("--switch", default="ovsk", choices=["ovsk"])
     parser.add_argument("--skip-clean", action="store_true")
     parser.add_argument("--skip-pingall", action="store_true")
-    parser.add_argument("--api-host", default="127.0.0.1")
+    parser.add_argument("--api-host", default="0.0.0.0")
     parser.add_argument("--api-port", type=int, default=8081)
     parser.add_argument("--disable-api", action="store_true")
 
