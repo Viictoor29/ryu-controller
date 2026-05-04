@@ -326,6 +326,10 @@ class TopologyService:
             if not ipv4_list:
                 continue
 
+            blocked_ips = getattr(self.app, "blocked_ips", set())
+            blocked_ipv4 = [ip for ip in ipv4_list if ip in blocked_ips]
+            ip_blocked = bool(blocked_ipv4)
+
             switch_id = str(host.port.dpid)
 
             if switch_id not in active_switch_ids:
@@ -357,7 +361,11 @@ class TopologyService:
                     "type": "host",
                     "mac": str(host.mac),
                     "ipv4": ipv4_list,
-                    "ipv6": list(host.ipv6) if hasattr(host, "ipv6") else []
+                    "ipv6": list(host.ipv6) if hasattr(host, "ipv6") else [],
+                    "ip_blocked": ip_blocked,
+                    "traffic_blocked": ip_blocked,
+                    "blocked_ipv4": blocked_ipv4,
+                    "traffic_state": "blocked" if ip_blocked else "allowed"
                 })
                 seen_nodes.add(host_id)
 
@@ -400,6 +408,8 @@ class TopologyService:
                 "admin_state": admin_state,
                 "stp_state": stp_state,
                 "stp_blocked": stp_blocked,
+                "host_ip_blocked": ip_blocked,
+                "blocked_ipv4": blocked_ipv4,
                 "tc_sw_port": switch_tc,
                 "degradation-link": port_status
             })
