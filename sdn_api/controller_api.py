@@ -1,5 +1,6 @@
 import time
 import json
+import ipaddress
 import urllib.request
 
 from ryu.base import app_manager
@@ -17,6 +18,8 @@ from ryu.lib import stplib
 from ryu.lib.packet import packet
 from ryu.lib.packet import ethernet
 from ryu.lib.packet import ether_types
+from ryu.lib.packet import ipv4
+from ryu.lib.packet import arp
 from ryu.topology.api import get_switch, get_link, get_host
 from ryu.topology import event
 
@@ -59,6 +62,7 @@ class SDNControllerAPI(app_manager.RyuApp):
 
         self.mac_to_port = {}
         self.blocked_ports = set()
+        self.blocked_ips = set()
 
         # Hosts borrados manualmente.
         # Se ocultan de la topología hasta que vuelvan a generar tráfico.
@@ -206,6 +210,158 @@ class SDNControllerAPI(app_manager.RyuApp):
     def is_port_blocked(self, dpid, port_no):
         return (int(dpid), int(port_no)) in self.blocked_ports
 
+    def normalize_blocked_ip(self, ip):
+        try:
+            normalized = ipaddress.ip_address(str(ip).strip())
+        except Exception:
+            raise ValueError(f"IP inválida: {ip}")
+
+        if normalized.version != 4:
+            raise ValueError("De momento solo se soporta bloqueo de IPv4")
+
+        return str(normalized)
+
+    def _blocked_ip_matches(self, parser, ip):
+        return [
+            parser.OFPMatch(eth_type=0x0800, ipv4_src=ip),
+            parser.OFPMatch(eth_type=0x0800, ipv4_dst=ip),
+            parser.OFPMatch(eth_type=0x0806, arp_spa=ip),
+            parser.OFPMatch(eth_type=0x0806, arp_tpa=ip),
+        ]
+
+    def install_block_ip_flows(self, datapath, ip):
+        if datapath is None:
+            return []
+
+        parser = datapath.ofproto_parser
+        installed = []
+
+        for match in self._blocked_ip_matches(parser, ip):
+            self.add_flow(
+                datapath,
+                priority=100,
+                match=match,
+                actions=[],
+                idle_timeout=0,
+                hard_timeout=0,
+            )
+            installed.append(str(match))
+
+        return installed
+
+    def delete_block_ip_flows(self, datapath, ip):
+        if datapath is None:
+            return []
+
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+        deleted = []
+
+        for match in self._blocked_ip_matches(parser, ip):
+            mod = parser.OFPFlowMod(
+                datapath=datapath,
+                command=ofproto.OFPFC_DELETE,
+                out_port=ofproto.OFPP_ANY,
+                out_group=ofproto.OFPG_ANY,
+                priority=100,
+                match=match,
+            )
+            datapath.send_msg(mod)
+            deleted.append(str(match))
+
+        return deleted
+
+    def apply_blocked_ips_to_datapath(self, datapath):
+        if datapath is None:
+            return []
+
+        applied = []
+        for ip in sorted(self.blocked_ips):
+            self.install_block_ip_flows(datapath, ip)
+            applied.append(ip)
+
+        return applied
+
+    def packet_has_blocked_ip(self, pkt):
+        if not self.blocked_ips:
+            return False
+
+        ipv4_pkt = pkt.get_protocol(ipv4.ipv4)
+        if ipv4_pkt and (ipv4_pkt.src in self.blocked_ips or ipv4_pkt.dst in self.blocked_ips):
+            return True
+
+        arp_pkt = pkt.get_protocol(arp.arp)
+        if arp_pkt and (arp_pkt.src_ip in self.blocked_ips or arp_pkt.dst_ip in self.blocked_ips):
+            return True
+
+        return False
+
+    def get_blocked_ips_status(self):
+        return {
+            "blocked_ips": sorted(self.blocked_ips),
+            "blocked_count": len(self.blocked_ips),
+            "switches": sorted(str(dpid) for dpid in self.datapaths.keys()),
+        }
+
+    def block_ip_traffic(self, ip):
+        ip = self.normalize_blocked_ip(ip)
+        already_blocked = ip in self.blocked_ips
+        self.blocked_ips.add(ip)
+
+        switches = []
+        for dpid, datapath in sorted(self.datapaths.items()):
+            self.install_block_ip_flows(datapath, ip)
+            switches.append(str(dpid))
+
+        self.logger.info("Tráfico bloqueado para IP %s en switches=%s", ip, switches)
+
+        return {
+            "ip": ip,
+            "state": "blocked",
+            "already_blocked": already_blocked,
+            "switches_updated": switches,
+            "blocked_ips": sorted(self.blocked_ips),
+        }
+
+    def unblock_ip_traffic(self, ip):
+        ip = self.normalize_blocked_ip(ip)
+        was_blocked = ip in self.blocked_ips
+        self.blocked_ips.discard(ip)
+
+        switches = []
+        for dpid, datapath in sorted(self.datapaths.items()):
+            self.delete_block_ip_flows(datapath, ip)
+            switches.append(str(dpid))
+
+        self.logger.info("Tráfico reactivado para IP %s en switches=%s", ip, switches)
+
+        return {
+            "ip": ip,
+            "state": "unblocked",
+            "was_blocked": was_blocked,
+            "switches_updated": switches,
+            "blocked_ips": sorted(self.blocked_ips),
+        }
+
+    def unblock_all_ip_traffic(self):
+        ips = sorted(self.blocked_ips)
+        switches = []
+
+        for dpid, datapath in sorted(self.datapaths.items()):
+            for ip in ips:
+                self.delete_block_ip_flows(datapath, ip)
+            switches.append(str(dpid))
+
+        self.blocked_ips.clear()
+        self.logger.info("Tráfico reactivado para todas las IPs bloqueadas: %s", ips)
+
+        return {
+            "state": "all_unblocked",
+            "ips_unblocked": ips,
+            "switches_updated": switches,
+            "blocked_ips": [],
+        }
+
     def add_flow(
         self,
         datapath,
@@ -268,6 +424,7 @@ class SDNControllerAPI(app_manager.RyuApp):
         dpid = int(datapath.id)
         self.mac_to_port.pop(dpid, None)
         self.delete_flows(datapath)
+        self.apply_blocked_ips_to_datapath(datapath)
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -297,6 +454,7 @@ class SDNControllerAPI(app_manager.RyuApp):
             if dpid not in self.datapaths:
                 self.logger.info("Switch conectado: %s", dpid)
             self.datapaths[dpid] = datapath
+            self.apply_blocked_ips_to_datapath(datapath)
 
         elif ev.state == DEAD_DISPATCHER:
             if dpid in self.datapaths:
@@ -354,6 +512,9 @@ class SDNControllerAPI(app_manager.RyuApp):
         eth = eth[0]
 
         if eth.ethertype == ether_types.ETH_TYPE_LLDP:
+            return
+
+        if self.packet_has_blocked_ip(pkt):
             return
 
         dst = eth.dst.lower()

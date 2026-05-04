@@ -240,6 +240,59 @@ class SDNRestController(ControllerBase):
             self.sdn_app.logger.exception("Error en GET /api/switch/%s/flows: %s", kwargs.get("dpid"), e)
             return error_response(e, status=500)
     
+    @route("traffic_block_ip", "/api/traffic/block-ip", methods=["POST", "OPTIONS"])
+    def traffic_block_ip(self, req, **kwargs):
+        if req.method == "OPTIONS":
+            return cors_preflight()
+
+        try:
+            body = read_json_body(req)
+            require_fields(body, "ip")
+
+            result = self.sdn_app.block_ip_traffic(body["ip"])
+            return success_response(result)
+        except Exception as e:
+            self.sdn_app.logger.exception("Error en POST /api/traffic/block-ip: %s", e)
+            return error_response(e, status=400)
+
+    @route("traffic_unblock_ip", "/api/traffic/unblock-ip", methods=["POST", "OPTIONS"])
+    def traffic_unblock_ip(self, req, **kwargs):
+        if req.method == "OPTIONS":
+            return cors_preflight()
+
+        try:
+            body = read_json_body(req)
+            require_fields(body, "ip")
+
+            result = self.sdn_app.unblock_ip_traffic(body["ip"])
+            return success_response(result)
+        except Exception as e:
+            self.sdn_app.logger.exception("Error en POST /api/traffic/unblock-ip: %s", e)
+            return error_response(e, status=400)
+
+    @route("traffic_unblock_all_ips", "/api/traffic/unblock-all-ips", methods=["POST", "OPTIONS"])
+    def traffic_unblock_all_ips(self, req, **kwargs):
+        if req.method == "OPTIONS":
+            return cors_preflight()
+
+        try:
+            result = self.sdn_app.unblock_all_ip_traffic()
+            return success_response(result)
+        except Exception as e:
+            self.sdn_app.logger.exception("Error en POST /api/traffic/unblock-all-ips: %s", e)
+            return error_response(e, status=400)
+
+    @route("traffic_blocked_ips", "/api/traffic/blocked-ips", methods=["GET", "OPTIONS"])
+    def traffic_blocked_ips(self, req, **kwargs):
+        if req.method == "OPTIONS":
+            return cors_preflight()
+
+        try:
+            return success_response(self.sdn_app.get_blocked_ips_status())
+        except Exception as e:
+            self.sdn_app.logger.exception("Error en GET /api/traffic/blocked-ips: %s", e)
+            return error_response(e, status=500)
+
     @route("traffic_ping", "/api/traffic/ping", methods=["POST", "OPTIONS"])
     def traffic_ping(self, req, **kwargs):
         if req.method == "OPTIONS":
