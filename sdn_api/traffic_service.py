@@ -215,15 +215,43 @@ class TrafficService:
 
     def _discover_host_names(self):
         hosts = self.app.topology_get_hosts()
+        active_dpids = {str(dpid) for dpid in getattr(self.app, "datapaths", {}).keys()}
+        deleted_macs = getattr(self.app, "deleted_host_macs", set())
+
         names = []
         seen = set()
 
         for host in hosts:
-            mac = str(getattr(host, "mac", ""))
+            mac = str(getattr(host, "mac", "")).lower()
+            if not mac:
+                continue
+
+            ipv4_list = list(getattr(host, "ipv4", []))
+            if not ipv4_list:
+                continue
+
+            port = getattr(host, "port", None)
+            dpid = str(getattr(port, "dpid", "")) if port is not None else ""
+            if active_dpids and dpid not in active_dpids:
+                continue
+
             name = self._host_name_from_mac(mac)
-            if name and name not in seen:
-                names.append(name)
-                seen.add(name)
+            if not name or name in seen:
+                continue
+
+            # Comprobación real: el namespace de Mininet debe existir.
+            # Así evitamos h2/h3 después de borrarlos.
+            try:
+                self._get_host_pid(name)
+            except Exception:
+                continue
+
+            # Si el host fue recreado con la misma MAC, lo dejamos reaparecer.
+            if mac in deleted_macs:
+                deleted_macs.discard(mac)
+
+            names.append(name)
+            seen.add(name)
 
         def host_sort_key(name):
             m = re.search(r"(\d+)$", name)
