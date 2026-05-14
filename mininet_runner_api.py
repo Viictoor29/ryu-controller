@@ -37,6 +37,7 @@ def run():
     parser.add_argument("--api-host", default="0.0.0.0")
     parser.add_argument("--api-port", type=int, default=8081)
     parser.add_argument("--disable-api", action="store_true")
+    parser.add_argument("--ryu-api-url", default="http://127.0.0.1:8080")
 
     args = parser.parse_args()
     topo = load_topology(args.module, args.topo)
@@ -58,7 +59,12 @@ def run():
         net.start()
 
         if not args.disable_api:
-            api = MininetAPIService(net, host=args.api_host, port=args.api_port)
+            api = MininetAPIService(
+                net,
+                host=args.api_host,
+                port=args.api_port,
+                ryu_api_url=args.ryu_api_url,
+            )
             api.start()
 
         if not args.skip_pingall:

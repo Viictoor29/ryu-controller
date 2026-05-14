@@ -29,6 +29,7 @@ from tc_service import TCService
 from stats_service import StatsService
 from health_service import HealthService
 from traffic_service import TrafficService
+from scenario_service import ScenarioService
 
 
 class SDNControllerAPI(app_manager.RyuApp):
@@ -73,6 +74,7 @@ class SDNControllerAPI(app_manager.RyuApp):
         self.stats_service = StatsService(self)
         self.health_service = HealthService(self)
         self.traffic_service = TrafficService(self)
+        self.scenario_service = ScenarioService(self)
 
         self.monitor_thread = hub.spawn(self.stats_service.monitor_loop)
 
@@ -92,6 +94,42 @@ class SDNControllerAPI(app_manager.RyuApp):
         self.stp_ready = False
         self.stp_ready_since = None
         self.stp_last_change = time.time()
+
+    def reset_runtime_state(self, preserve_blocked_ips=False, flush_flows=True):
+        preserved_blocked_ips = set(self.blocked_ips) if preserve_blocked_ips else set()
+
+        self.links_inventory.clear()
+        self.host_links_inventory.clear()
+        self.port_stats.clear()
+        self.port_speed.clear()
+        self.port_admin_state.clear()
+        self.stp_port_state.clear()
+        self.flow_stats.clear()
+        self.mac_to_port.clear()
+        self.blocked_ports.clear()
+        self.deleted_host_macs.clear()
+
+        self.blocked_ips = preserved_blocked_ips
+
+        if flush_flows:
+            for datapath in list(self.datapaths.values()):
+                try:
+                    self.flush_switch_learning(datapath)
+                except Exception as e:
+                    self.logger.exception(
+                        "Error limpiando flows del switch %s: %s",
+                        getattr(datapath, "id", "unknown"),
+                        e,
+                    )
+
+        self.mark_stp_changed()
+
+        return {
+            "state": "runtime_reset",
+            "preserve_blocked_ips": bool(preserve_blocked_ips),
+            "blocked_ips": sorted(self.blocked_ips),
+            "datapaths_connected": sorted(str(dpid) for dpid in self.datapaths.keys()),
+        }
 
     def get_stp_status(self):
         return {

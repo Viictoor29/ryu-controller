@@ -28,6 +28,68 @@ class SDNRestController(ControllerBase):
             self.sdn_app.logger.exception("Error en GET /api/topology: %s", e)
             return error_response(e, status=500)
 
+    @route("topology_export", "/api/topology/export", methods=["GET", "OPTIONS"])
+    def export_topology(self, req, **kwargs):
+        if req.method == "OPTIONS":
+            return cors_preflight()
+
+        try:
+            name = req.GET.get("name") if hasattr(req, "GET") else None
+            include_runtime = True
+            if hasattr(req, "GET") and req.GET.get("include_runtime") is not None:
+                include_runtime = str(req.GET.get("include_runtime")).lower() not in ("0", "false", "no")
+
+            body = self.sdn_app.scenario_service.export_current_topology(
+                name=name,
+                include_runtime=include_runtime,
+            )
+            return success_response(body)
+        except Exception as e:
+            self.sdn_app.logger.exception("Error en GET /api/topology/export: %s", e)
+            return error_response(e, status=500)
+
+    @route("topology_validate", "/api/topology/validate", methods=["POST", "OPTIONS"])
+    def validate_topology(self, req, **kwargs):
+        if req.method == "OPTIONS":
+            return cors_preflight()
+
+        try:
+            body = read_json_body(req)
+            result = self.sdn_app.scenario_service.validate_import_payload(body)
+            return success_response(result)
+        except Exception as e:
+            self.sdn_app.logger.exception("Error en POST /api/topology/validate: %s", e)
+            return error_response(e, status=400)
+
+    @route("topology_import", "/api/topology/import", methods=["POST", "OPTIONS"])
+    def import_topology(self, req, **kwargs):
+        if req.method == "OPTIONS":
+            return cors_preflight()
+
+        try:
+            body = read_json_body(req)
+            result = self.sdn_app.scenario_service.import_topology_from_web(body)
+            return success_response(result)
+        except Exception as e:
+            self.sdn_app.logger.exception("Error en POST /api/topology/import: %s", e)
+            return error_response(e, status=400)
+
+    @route("controller_runtime_reset", "/api/controller/runtime/reset", methods=["POST", "OPTIONS"])
+    def reset_runtime_state(self, req, **kwargs):
+        if req.method == "OPTIONS":
+            return cors_preflight()
+
+        try:
+            body = read_json_body(req)
+            result = self.sdn_app.reset_runtime_state(
+                preserve_blocked_ips=body.get("preserve_blocked_ips", False),
+                flush_flows=body.get("flush_flows", True),
+            )
+            return success_response(result)
+        except Exception as e:
+            self.sdn_app.logger.exception("Error en POST /api/controller/runtime/reset: %s", e)
+            return error_response(e, status=400)
+
     @route("disable_link", "/api/links/disable", methods=["POST", "OPTIONS"])
     def disable_link(self, req, **kwargs):
         if req.method == "OPTIONS":
