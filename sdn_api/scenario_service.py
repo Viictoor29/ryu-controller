@@ -232,6 +232,7 @@ class ScenarioService:
             "scenario": scenario,
             "mininet": None,
             "controller_reset": None,
+            "host_cleanup": None,
             "wait": None,
             "policies": None,
             "pingall": None,
@@ -250,6 +251,16 @@ class ScenarioService:
                 preserve_blocked_ips=preserve_blocked_ips,
                 flush_flows=True,
             )
+        
+        expected_host_macs = {
+            str(host.get("mac")).strip().lower()
+            for host in scenario.get("mininet", {}).get("hosts", [])
+            if host.get("mac")
+        }
+
+        result["host_cleanup"] = self.app.mark_deleted_hosts_not_in_expected(
+            expected_host_macs
+        )
 
         if wait:
             result["wait"] = self.wait_until_topology_ready(

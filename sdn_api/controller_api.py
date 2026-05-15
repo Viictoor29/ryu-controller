@@ -107,7 +107,6 @@ class SDNControllerAPI(app_manager.RyuApp):
         self.flow_stats.clear()
         self.mac_to_port.clear()
         self.blocked_ports.clear()
-        self.deleted_host_macs.clear()
 
         self.blocked_ips = preserved_blocked_ips
 
@@ -128,7 +127,53 @@ class SDNControllerAPI(app_manager.RyuApp):
             "state": "runtime_reset",
             "preserve_blocked_ips": bool(preserve_blocked_ips),
             "blocked_ips": sorted(self.blocked_ips),
+            "deleted_host_macs": sorted(self.deleted_host_macs),
             "datapaths_connected": sorted(str(dpid) for dpid in self.datapaths.keys()),
+        }
+    
+    def mark_deleted_hosts_not_in_expected(self, expected_macs):
+        expected_macs = {
+            str(mac).strip().lower()
+            for mac in (expected_macs or [])
+            if mac
+        }
+
+        current_macs = set()
+
+        try:
+            hosts = self.topology_get_hosts()
+        except Exception as e:
+            self.logger.exception("Error obteniendo hosts de Ryu para limpiar stale hosts: %s", e)
+            hosts = []
+
+        for host in hosts:
+            mac = str(getattr(host, "mac", "") or "").strip().lower()
+            if mac:
+                current_macs.add(mac)
+
+        stale_macs = {
+            mac for mac in current_macs
+            if mac not in expected_macs
+        }
+
+        self.deleted_host_macs.update(stale_macs)
+
+        if stale_macs:
+            self.host_links_inventory = {
+                k: v for k, v in self.host_links_inventory.items()
+                if str(v.get("host_mac", "")).lower() not in stale_macs
+            }
+
+        self.logger.info(
+            "Hosts antiguos ocultados tras importar escenario: %s",
+            sorted(stale_macs),
+        )
+
+        return {
+            "expected_macs": sorted(expected_macs),
+            "current_ryu_macs": sorted(current_macs),
+            "stale_macs_hidden": sorted(stale_macs),
+            "deleted_host_macs": sorted(self.deleted_host_macs),
         }
 
     def get_stp_status(self):

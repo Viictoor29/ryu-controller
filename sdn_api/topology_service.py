@@ -278,12 +278,26 @@ class TopologyService:
                 seen_nodes.add(sw_id)
 
         try:
-            hosts = self.app.topology_get_hosts()
+            raw_hosts = self.app.topology_get_hosts()
+
+            deleted_host_macs = {
+                str(mac).strip().lower()
+                for mac in getattr(self.app, "deleted_host_macs", set())
+            }
 
             seen_host_ports = {}
             filtered_hosts = []
 
-            for host in hosts:
+            for host in raw_hosts:
+                host_mac = str(getattr(host, "mac", "") or "").strip().lower()
+
+                # Importante:
+                # primero filtramos hosts borrados/stale antes de deduplicar por puerto.
+                # Así, si Ryu tiene H169 y H1 en el mismo puerto, H169 se descarta
+                # y H1 puede aparecer.
+                if host_mac in deleted_host_macs:
+                    continue
+
                 switch_id = str(host.port.dpid)
 
                 if switch_id not in active_switch_ids:
@@ -300,12 +314,14 @@ class TopologyService:
                 old = seen_host_ports[key]
                 old_ipv4 = list(old.ipv4) if hasattr(old, "ipv4") else []
 
+                # Si hay dos hosts en el mismo puerto, preferimos el que tenga IPv4.
                 if ipv4_list and not old_ipv4:
                     filtered_hosts.remove(old)
                     seen_host_ports[key] = host
                     filtered_hosts.append(host)
 
             hosts = filtered_hosts
+
         except Exception as e:
             self.app.logger.exception("Error obteniendo hosts con get_host(): %s", e)
             hosts = []

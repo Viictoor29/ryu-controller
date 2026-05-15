@@ -247,10 +247,24 @@ class MininetAPIService:
         with self.lock:
             host = self._create_host(body)
 
+            body_ip = body.get("ip")
+
+            if body_ip is None:
+                body_ipv4 = body.get("ipv4")
+                if isinstance(body_ipv4, list) and body_ipv4:
+                    body_ip = body_ipv4[0]
+                else:
+                    body_ip = body_ipv4
+
+            body_mac = body.get("mac")
+
+            ip = self.safe_host_ip(host) or body_ip
+            mac = self.safe_host_mac(host) or body_mac
+
             result = {
                 "name": host.name,
-                "ip": self.safe_host_ip(host),
-                "mac": self.safe_host_mac(host),
+                "ip": ip,
+                "mac": mac,
                 "state": "created",
             }
 
@@ -331,13 +345,21 @@ class MininetAPIService:
 
         link = self.net.addLink(n1, n2, **params)
 
+        ofport_results = []
+
         if n1 in self.net.switches:
-            n1.attach(link.intf1)
+            ofport_results.append(
+                self.attach_switch_intf(n1, link.intf1, link_spec.get("port1"))
+            )
+
         if n2 in self.net.switches:
-            n2.attach(link.intf2)
+            ofport_results.append(
+                self.attach_switch_intf(n2, link.intf2, link_spec.get("port2"))
+            )
 
         if n1 in self.net.hosts:
             n1.configDefault()
+
         if n2 in self.net.hosts:
             n2.configDefault()
 
@@ -349,6 +371,7 @@ class MininetAPIService:
             "intf1": str(link.intf1),
             "intf2": str(link.intf2),
             "link": str(link),
+            "ofports": ofport_results,
             "state": "created",
         }
 
@@ -911,3 +934,67 @@ class MininetAPIService:
         if value is None or value == "":
             return None
         return int(value)
+    
+    def get_ovs_ofport(self, switch, intf_name):
+        out = switch.cmd(
+            "ovs-vsctl",
+            "--if-exists",
+            "get",
+            "Interface",
+            intf_name,
+            "ofport"
+        ).strip()
+
+        try:
+            return int(out)
+        except Exception:
+            return None
+
+
+    def attach_switch_intf(self, switch, intf, requested_ofport=None):
+        intf_name = str(intf)
+
+        if requested_ofport is None:
+            switch.attach(intf)
+            return {
+                "switch": switch.name,
+                "intf": intf_name,
+                "requested_ofport": None,
+                "current_ofport": self.get_ovs_ofport(switch, intf_name)
+            }
+
+        requested_ofport = int(requested_ofport)
+
+        # Añadir el puerto a OVS pidiendo explícitamente el OpenFlow port.
+        switch.cmd(
+            "ovs-vsctl",
+            "--may-exist",
+            "add-port",
+            switch.name,
+            intf_name,
+            "--",
+            "set",
+            "Interface",
+            intf_name,
+            f"ofport_request={requested_ofport}"
+        )
+
+        current = None
+        for _ in range(20):
+            current = self.get_ovs_ofport(switch, intf_name)
+            if current == requested_ofport:
+                break
+            time.sleep(0.1)
+
+        if current != requested_ofport:
+            raise RuntimeError(
+                f"No se pudo asignar ofport {requested_ofport} a {intf_name}. "
+                f"OVS asignó {current}"
+            )
+
+        return {
+            "switch": switch.name,
+            "intf": intf_name,
+            "requested_ofport": requested_ofport,
+            "current_ofport": current
+        }

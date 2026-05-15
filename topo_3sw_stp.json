@@ -1,0 +1,60 @@
+{
+  "kind": "sdn_topology_scenario",
+  "version": 1,
+  "name": "three-switches-stp-test",
+  "mininet": {
+    "switches": [
+      { "name": "s1", "dpid": "1" },
+      { "name": "s2", "dpid": "2" },
+      { "name": "s3", "dpid": "3" }
+    ],
+    "hosts": [
+      {
+        "name": "h1",
+        "ip": "10.0.0.1",
+        "mac": "00:00:00:00:00:01",
+        "switch": "s1",
+        "switch_dpid": "1",
+        "switch_port": 1
+      },
+      {
+        "name": "h2",
+        "ip": "10.0.0.2",
+        "mac": "00:00:00:00:00:02",
+        "switch": "s2",
+        "switch_dpid": "2",
+        "switch_port": 1
+      },
+      {
+        "name": "h3",
+        "ip": "10.0.0.3",
+        "mac": "00:00:00:00:00:03",
+        "switch": "s3",
+        "switch_dpid": "3",
+        "switch_port": 1
+      }
+    ],
+    "links": [
+      {
+        "type": "switch-link",
+        "src": { "node": "s1", "dpid": "1", "port_no": 2 },
+        "dst": { "node": "s2", "dpid": "2", "port_no": 2 }
+      },
+      {
+        "type": "switch-link",
+        "src": { "node": "s2", "dpid": "2", "port_no": 3 },
+        "dst": { "node": "s3", "dpid": "3", "port_no": 2 }
+      },
+      {
+        "type": "switch-link",
+        "src": { "node": "s3", "dpid": "3", "port_no": 3 },
+        "dst": { "node": "s1", "dpid": "1", "port_no": 3 }
+      }
+    ]
+  },
+  "policies": {
+    "disabled_links": [],
+    "tc": [],
+    "blocked_ips": []
+  }
+}
