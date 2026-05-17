@@ -140,41 +140,37 @@ class NodeServiceMixin:
                 raise ValueError(f"{name} no es un switch")
 
             removed_links = []
-            orphan_hosts = []
+            ryu_link_results = []
+            affected_hosts = []
 
             for link in list(self.net.links):
                 node1 = link.intf1.node
                 node2 = link.intf2.node
                 if node1 == sw and node2 in self.net.hosts:
-                    orphan_hosts.append(node2)
+                    affected_hosts.append(node2)
                 elif node2 == sw and node1 in self.net.hosts:
-                    orphan_hosts.append(node1)
+                    affected_hosts.append(node1)
 
-            orphan_hosts = list({host.name: host for host in orphan_hosts}.values())
+            affected_hosts = list({host.name: host for host in affected_hosts}.values())
 
             for intf in list(sw.intfList()):
                 link = getattr(intf, "link", None)
                 if link:
+                    try:
+                        ryu_link_results.extend(self.notify_ryu_before_link_delete(link))
+                    except Exception as e:
+                        ryu_link_results.append({"link": str(link), "error": str(e)})
                     removed_links.append(str(link))
                     self.net.delLink(link)
 
-            deleted_hosts = []
-            for host in orphan_hosts:
-                if host.name not in self.net:
-                    continue
-                mac = self.safe_host_mac(host) or self.mac_from_host_name(host.name)
-                ryu_result = None
-                if mac:
-                    try:
-                        ryu_result = self.notify_ryu_forget_host(mac)
-                    except Exception as e:
-                        ryu_result = str(e)
-                self.net.delHost(host)
-                deleted_hosts.append({
-                    "name": host.name,
-                    "mac": mac,
-                    "ryu_forget_result": ryu_result,
-                })
+            kept_hosts = []
+            for host in affected_hosts:
+                if host.name in self.net:
+                    kept_hosts.append({
+                        "name": host.name,
+                        "mac": self.safe_host_mac(host) or self.mac_from_host_name(host.name),
+                        "ip": self.safe_host_ip(host),
+                    })
 
             try:
                 sw.stop()
@@ -186,7 +182,12 @@ class NodeServiceMixin:
                 "name": name,
                 "removed_links": removed_links,
                 "removed_links_count": len(removed_links),
-                "deleted_hosts_count": len(deleted_hosts),
-                "deleted_hosts": deleted_hosts,
+                "kept_hosts_count": len(kept_hosts),
+                "kept_hosts": kept_hosts,
+                # Campos antiguos conservados para no romper clientes existentes:
+                # ahora borrar un switch ya no borra hosts huérfanos.
+                "deleted_hosts_count": 0,
+                "deleted_hosts": [],
+                "ryu_link_results": ryu_link_results,
                 "state": "deleted",
             }

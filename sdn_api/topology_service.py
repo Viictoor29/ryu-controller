@@ -248,6 +248,54 @@ class TopologyService:
 
         active_switch_ids = {str(dpid) for dpid in self.app.datapaths.keys()}
 
+        def normalize_list(value):
+            if value is None:
+                return []
+            if isinstance(value, (list, tuple, set)):
+                return [str(item) for item in value if item]
+            if value:
+                return [str(value)]
+            return []
+
+        def host_node_suffix(mac):
+            host_num = self._host_number_from_mac(mac)
+            return host_num if host_num is not None else str(mac)
+
+        def add_host_node(mac, connected=False):
+            mac = str(mac or "").strip().lower()
+            if not mac or mac in getattr(self.app, "deleted_host_macs", set()):
+                return None
+
+            host_record = getattr(self.app, "hosts_inventory", {}).get(mac, {"mac": mac})
+            ipv4_list = normalize_list(host_record.get("ipv4"))
+            ipv6_list = normalize_list(host_record.get("ipv6"))
+
+            blocked_ips = getattr(self.app, "blocked_ips", set())
+            blocked_ipv4 = [ip for ip in ipv4_list if ip in blocked_ips]
+            ip_blocked = bool(blocked_ipv4)
+
+            h_id = host_node_suffix(mac)
+            node_id = "H" + h_id
+
+            if mac not in seen_nodes:
+                nodes.append({
+                    "id": node_id,
+                    "type": "host",
+                    "name": host_record.get("name") or self._host_name_from_mac(mac),
+                    "mac": mac,
+                    "ipv4": ipv4_list,
+                    "ipv6": ipv6_list,
+                    "connected": bool(connected),
+                    "state": "connected" if connected else "disconnected",
+                    "ip_blocked": ip_blocked,
+                    "traffic_blocked": ip_blocked,
+                    "blocked_ipv4": blocked_ipv4,
+                    "traffic_state": "blocked" if ip_blocked else "allowed"
+                })
+                seen_nodes.add(mac)
+
+            return node_id
+
         try:
             switches = self.app.topology_get_switches()
         except Exception as e:
@@ -277,25 +325,44 @@ class TopologyService:
                 })
                 seen_nodes.add(sw_id)
 
+        deleted_host_macs = {
+            str(mac).strip().lower()
+            for mac in getattr(self.app, "deleted_host_macs", set())
+        }
+        detached_host_macs = {
+            str(mac).strip().lower()
+            for mac in getattr(self.app, "detached_host_macs", set())
+        }
+
         try:
             raw_hosts = self.app.topology_get_hosts()
-
-            deleted_host_macs = {
-                str(mac).strip().lower()
-                for mac in getattr(self.app, "deleted_host_macs", set())
-            }
-
             seen_host_ports = {}
             filtered_hosts = []
 
             for host in raw_hosts:
                 host_mac = str(getattr(host, "mac", "") or "").strip().lower()
+                if not host_mac or host_mac in deleted_host_macs:
+                    continue
 
-                # Importante:
-                # primero filtramos hosts borrados/stale antes de deduplicar por puerto.
-                # Así, si Ryu tiene H169 y H1 en el mismo puerto, H169 se descarta
-                # y H1 puede aparecer.
-                if host_mac in deleted_host_macs:
+                ipv4_list = list(host.ipv4) if hasattr(host, "ipv4") else []
+                ipv6_list = list(host.ipv6) if hasattr(host, "ipv6") else []
+
+                try:
+                    self.app.remember_host(
+                        mac=host_mac,
+                        name=self._host_name_from_mac(host_mac),
+                        ipv4=ipv4_list,
+                        ipv6=ipv6_list,
+                        connected=host_mac not in detached_host_macs,
+                        source="ryu",
+                    )
+                except Exception:
+                    pass
+
+                # Si la API de Mininet nos ha dicho que el h-sw se ha borrado,
+                # Ryu puede seguir devolviendo temporalmente un host antiguo.
+                # Conservamos el nodo, pero no recreamos el enlace visual stale.
+                if host_mac in detached_host_macs:
                     continue
 
                 switch_id = str(host.port.dpid)
@@ -304,7 +371,6 @@ class TopologyService:
                     continue
 
                 key = (switch_id, int(host.port.port_no))
-                ipv4_list = list(host.ipv4) if hasattr(host, "ipv4") else []
 
                 if key not in seen_host_ports:
                     seen_host_ports[key] = host
@@ -327,24 +393,42 @@ class TopologyService:
             hosts = []
 
         for key in list(self.app.host_links_inventory.keys()):
-            self.app.host_links_inventory[key]["discovered"] = False
-            self.app.host_links_inventory[key]["enabled"] = False
+            host_link = self.app.host_links_inventory[key]
+            host_mac = str(host_link.get("host_mac", "")).lower()
+
+            if host_mac in detached_host_macs:
+                self.app.host_links_inventory.pop(key, None)
+                continue
+
+            # Los enlaces h-sw declarados por Mininet no deben apagarse solo porque
+            # Ryu todavía no haya reaprendido el host. Si no vienen de Mininet,
+            # se recalculan con los hosts descubiertos en este ciclo.
+            if host_link.get("source") == "mininet":
+                continue
+
+            host_link["discovered"] = False
+            host_link["enabled"] = False
 
         for host in hosts:
             host_mac = str(host.mac).lower()
 
-            if host_mac in getattr(self.app, "deleted_host_macs", set()):
+            if host_mac in deleted_host_macs or host_mac in detached_host_macs:
                 continue
-            
-            host_id = str(host.mac)
 
             ipv4_list = list(host.ipv4) if hasattr(host, "ipv4") else []
-            if not ipv4_list:
-                continue
+            ipv6_list = list(host.ipv6) if hasattr(host, "ipv6") else []
 
-            blocked_ips = getattr(self.app, "blocked_ips", set())
-            blocked_ipv4 = [ip for ip in ipv4_list if ip in blocked_ips]
-            ip_blocked = bool(blocked_ipv4)
+            try:
+                self.app.remember_host(
+                    mac=host_mac,
+                    name=self._host_name_from_mac(host_mac),
+                    ipv4=ipv4_list,
+                    ipv6=ipv6_list,
+                    connected=True,
+                    source="ryu",
+                )
+            except Exception:
+                pass
 
             switch_id = str(host.port.dpid)
 
@@ -352,47 +436,60 @@ class TopologyService:
                 continue
 
             switch_port = int(host.port.port_no)
-            switch_iface = self.get_interface_name(switch_id, switch_port)
-            switch_tc = self.get_interface_tc_state(switch_iface)
-
-            host_link_key = (str(host.mac), str(switch_id), int(switch_port))
+            host_link_key = (host_mac, str(switch_id), int(switch_port))
 
             self.app.host_links_inventory[host_link_key] = {
-                "host_mac": str(host.mac),
+                "host_mac": host_mac,
                 "switch": str(switch_id),
                 "switch_port": int(switch_port),
                 "enabled": True,
-                "discovered": True
+                "discovered": True,
+                "source": "ryu"
             }
+
+        # Primero pintamos todos los hosts conocidos, incluidos los desconectados.
+        connected_macs = {
+            str(link.get("host_mac", "")).lower()
+            for link in self.app.host_links_inventory.values()
+            if link.get("discovered") and link.get("enabled")
+        }
+
+        for mac in sorted(getattr(self.app, "hosts_inventory", {}).keys()):
+            if str(mac).lower() in deleted_host_macs:
+                continue
+            add_host_node(mac, connected=str(mac).lower() in connected_macs)
+
+        # Después pintamos solo los enlaces h-sw que siguen conectados.
+        for host_link_key, host_link in list(self.app.host_links_inventory.items()):
+            host_mac = str(host_link.get("host_mac", "")).lower()
+
+            if host_mac in deleted_host_macs or host_mac in detached_host_macs:
+                continue
+
+            discovered = bool(host_link.get("discovered", False))
+            if not discovered:
+                continue
+
+            switch_id = str(host_link.get("switch"))
+            if switch_id not in active_switch_ids:
+                continue
+
+            switch_port = int(host_link.get("switch_port"))
+            switch_iface = self.get_interface_name(switch_id, switch_port)
+            switch_tc = self.get_interface_tc_state(switch_iface)
+
+            add_host_node(host_mac, connected=True)
 
             port_stats = self.app.port_stats.get(switch_id, {}).get(switch_port, {})
             port_status = self.compute_port_status(port_stats)
 
-            host_num = self._host_number_from_mac(host.mac)
-            h_id = host_num if host_num is not None else str(host.mac)
-
-            if host_id not in seen_nodes:
-                nodes.append({
-                    "id": "H" + h_id,
-                    "type": "host",
-                    "mac": str(host.mac),
-                    "ipv4": ipv4_list,
-                    "ipv6": list(host.ipv6) if hasattr(host, "ipv6") else [],
-                    "ip_blocked": ip_blocked,
-                    "traffic_blocked": ip_blocked,
-                    "blocked_ipv4": blocked_ipv4,
-                    "traffic_state": "blocked" if ip_blocked else "allowed"
-                })
-                seen_nodes.add(host_id)
-
-            host_link_state = self.app.host_links_inventory.get(host_link_key, {})
+            h_id = host_node_suffix(host_mac)
             admin_state = self._port_admin_state(switch_id, switch_port)
             stp_state = self._port_stp_state(switch_id, switch_port)
             stp_blocked = self.app.is_port_blocked(switch_id, switch_port)
 
-            discovered = bool(host_link_state.get("discovered", False))
             enabled = (
-                bool(host_link_state.get("enabled", False))
+                bool(host_link.get("enabled", False))
                 and admin_state == "up"
                 and stp_state != 0
             )
@@ -407,13 +504,16 @@ class TopologyService:
             if stp_state == 0 and admin_state == "up":
                 continue
 
-            if not discovered:
-                continue
+            host_record = getattr(self.app, "hosts_inventory", {}).get(host_mac, {})
+            ipv4_list = normalize_list(host_record.get("ipv4"))
+            blocked_ips = getattr(self.app, "blocked_ips", set())
+            blocked_ipv4 = [ip for ip in ipv4_list if ip in blocked_ips]
+            ip_blocked = bool(blocked_ipv4)
 
             edges.append({
                 "type": "host-link",
                 "source-h": "H" + h_id,
-                "mac": str(host.mac),
+                "mac": host_mac,
                 "target-s": "S" + switch_id,
                 "s-port": switch_port,
                 "s-iface": switch_iface,

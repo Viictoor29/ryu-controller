@@ -54,6 +54,8 @@ class SDNControllerAPI(app_manager.RyuApp):
 
         self.links_inventory = {}
         self.host_links_inventory = {}
+        self.hosts_inventory = {}
+        self.detached_host_macs = set()
 
         self.port_stats = {}
         self.port_speed = {}
@@ -106,6 +108,8 @@ class SDNControllerAPI(app_manager.RyuApp):
 
         self.links_inventory.clear()
         self.host_links_inventory.clear()
+        self.hosts_inventory.clear()
+        self.detached_host_macs.clear()
         self.port_stats.clear()
         self.port_speed.clear()
         self.port_admin_state.clear()
@@ -138,6 +142,7 @@ class SDNControllerAPI(app_manager.RyuApp):
             "clear_deleted_hosts": bool(clear_deleted_hosts),
             "blocked_ips": sorted(self.blocked_ips),
             "deleted_host_macs": sorted(self.deleted_host_macs),
+            "detached_host_macs": sorted(self.detached_host_macs),
             "datapaths_connected": sorted(str(dpid) for dpid in self.datapaths.keys()),
         }
     
@@ -167,11 +172,16 @@ class SDNControllerAPI(app_manager.RyuApp):
         }
 
         self.deleted_host_macs.update(stale_macs)
+        self.detached_host_macs.difference_update(stale_macs)
 
         if stale_macs:
             self.host_links_inventory = {
                 k: v for k, v in self.host_links_inventory.items()
                 if str(v.get("host_mac", "")).lower() not in stale_macs
+            }
+            self.hosts_inventory = {
+                k: v for k, v in self.hosts_inventory.items()
+                if str(k).lower() not in stale_macs
             }
 
         self.logger.info(
@@ -635,6 +645,10 @@ class SDNControllerAPI(app_manager.RyuApp):
             self.deleted_host_macs.discard(src)
             self.logger.info("Host reaprendido tras tráfico: %s", src)
 
+        if src in self.detached_host_macs:
+            self.detached_host_macs.discard(src)
+            self.logger.info("Host reconectado tras tráfico: %s", src)
+
         if dst.startswith("33:33:"):
             return
 
@@ -858,15 +872,160 @@ class SDNControllerAPI(app_manager.RyuApp):
             dpid, port_no, admin_state, reason, is_admin_down, is_link_down,
         )
 
+    def _normalize_ip_list(self, value):
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple, set)):
+            return [str(item) for item in value if item]
+        if value:
+            return [str(value)]
+        return []
+
+    def remember_host(self, mac, name=None, ipv4=None, ipv6=None, connected=None, source=None):
+        mac = str(mac or "").strip().lower()
+        if not mac:
+            raise ValueError("No se puede recordar un host sin MAC")
+
+        current = self.hosts_inventory.setdefault(mac, {"mac": mac})
+
+        if name:
+            current["name"] = str(name)
+
+        ipv4_list = self._normalize_ip_list(ipv4)
+        if ipv4_list:
+            current["ipv4"] = ipv4_list
+
+        ipv6_list = self._normalize_ip_list(ipv6)
+        if ipv6_list:
+            current["ipv6"] = ipv6_list
+
+        if connected is not None:
+            current["connected"] = bool(connected)
+
+        if source:
+            current["source"] = str(source)
+
+        current["last_seen"] = int(time.time())
+        return current
+
+    def remember_host_from_payload(self, payload, connected=None, source="api"):
+        if not isinstance(payload, dict):
+            raise ValueError("El host debe venir como objeto JSON")
+
+        mac = payload.get("mac")
+        name = payload.get("name")
+        ipv4 = payload.get("ipv4")
+        if ipv4 is None:
+            ipv4 = payload.get("ip") or payload.get("ipv4_address")
+        ipv6 = payload.get("ipv6")
+
+        return self.remember_host(
+            mac=mac,
+            name=name,
+            ipv4=ipv4,
+            ipv6=ipv6,
+            connected=connected,
+            source=source,
+        )
+
+    def attach_host_link(self, body):
+        """
+        Mantiene el host visible y marca su enlace host-switch como conectado.
+        Usado por la API de Mininet al crear/recrear enlaces h-sw.
+        """
+        if not isinstance(body, dict):
+            raise ValueError("El body debe ser un objeto JSON")
+
+        host = self.remember_host_from_payload(
+            body.get("host") or body,
+            connected=True,
+            source="mininet",
+        )
+        mac = str(host["mac"]).lower()
+
+        self.deleted_host_macs.discard(mac)
+        self.detached_host_macs.discard(mac)
+
+        switch = body.get("switch") or {}
+        switch_dpid = switch.get("dpid") or body.get("switch_dpid")
+        switch_port = switch.get("port_no") or switch.get("port") or body.get("switch_port")
+
+        if switch_dpid is not None and switch_port is not None:
+            switch_id = str(switch_dpid)
+            switch_port = int(switch_port)
+            key = (mac, switch_id, switch_port)
+            self.host_links_inventory[key] = {
+                "host_mac": mac,
+                "switch": switch_id,
+                "switch_port": switch_port,
+                "enabled": True,
+                "discovered": True,
+                "last_seen": int(time.time()),
+                "source": "mininet",
+            }
+
+        self.logger.info("Host visible/conectado en topología: %s", mac)
+
+        return {
+            "mac": mac,
+            "host": host,
+            "state": "host_link_attached",
+        }
+
+    def detach_host_link(self, body):
+        """
+        Desconecta visualmente el enlace h-sw, pero conserva el nodo host.
+        Usado al borrar un enlace h-sw o al borrar un switch desde Mininet.
+        """
+        if not isinstance(body, dict):
+            raise ValueError("El body debe ser un objeto JSON")
+
+        host = self.remember_host_from_payload(
+            body.get("host") or body,
+            connected=False,
+            source="mininet",
+        )
+        mac = str(host["mac"]).lower()
+
+        self.deleted_host_macs.discard(mac)
+        self.detached_host_macs.add(mac)
+
+        switch = body.get("switch") or {}
+        switch_dpid = switch.get("dpid") or body.get("switch_dpid")
+        switch_port = switch.get("port_no") or switch.get("port") or body.get("switch_port")
+
+        removed = []
+        for key, link in list(self.host_links_inventory.items()):
+            same_host = str(link.get("host_mac", "")).lower() == mac
+            same_switch = switch_dpid is None or str(link.get("switch")) == str(switch_dpid)
+            same_port = switch_port is None or int(link.get("switch_port")) == int(switch_port)
+            if same_host and same_switch and same_port:
+                removed.append({
+                    "switch": str(link.get("switch")),
+                    "switch_port": int(link.get("switch_port")),
+                })
+                self.host_links_inventory.pop(key, None)
+
+        self.logger.info("Host conservado y enlace h-sw desconectado: %s", mac)
+
+        return {
+            "mac": mac,
+            "host": host,
+            "removed_links": removed,
+            "state": "host_link_detached_host_kept",
+        }
+
     def forget_host_by_mac(self, mac):
         """
         Usado por /api/hosts/forget/{mac}.
-        Oculta el host de la visualización.
+        Oculta el host de la visualización solo cuando el host se borra realmente.
         Si el host vuelve a generar tráfico, packet_in_handler lo reaprende.
         """
         mac = str(mac).lower()
 
         self.deleted_host_macs.add(mac)
+        self.detached_host_macs.discard(mac)
+        self.hosts_inventory.pop(mac, None)
 
         self.host_links_inventory = {
             k: v for k, v in self.host_links_inventory.items()

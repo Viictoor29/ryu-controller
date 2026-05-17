@@ -35,15 +35,20 @@ class SDNRestController(ControllerBase):
 
         try:
             name = req.GET.get("name") if hasattr(req, "GET") else None
-            include_runtime = True
+            include_runtime = False
+            include_controller = False
+
             if hasattr(req, "GET") and req.GET.get("include_runtime") is not None:
-                include_runtime = str(req.GET.get("include_runtime")).lower() not in ("0", "false", "no")
+                include_runtime = str(req.GET.get("include_runtime")).lower() in ("1", "true", "yes")
+
+            if hasattr(req, "GET") and req.GET.get("include_controller") is not None:
+                include_controller = str(req.GET.get("include_controller")).lower() in ("1", "true", "yes")
 
             body = self.sdn_app.scenario_service.export_current_topology(
                 name=name,
                 include_runtime=include_runtime,
+                include_controller=include_controller,
             )
-            return success_response(body)
         except Exception as e:
             self.sdn_app.logger.exception("Error en GET /api/topology/export: %s", e)
             return error_response(e, status=500)
@@ -484,6 +489,32 @@ class SDNRestController(ControllerBase):
             return success_response(result)
         except Exception as e:
             self.sdn_app.logger.exception("Error en POST /api/links/forget: %s", e)
+            return error_response(e, status=400)
+
+    @route("attach_host_link", "/api/hosts/link/attach", methods=["POST", "OPTIONS"])
+    def attach_host_link(self, req, **kwargs):
+        if req.method == "OPTIONS":
+            return cors_preflight()
+
+        try:
+            body = read_json_body(req)
+            result = self.sdn_app.attach_host_link(body)
+            return success_response(result)
+        except Exception as e:
+            self.sdn_app.logger.exception("Error conectando host-link: %s", e)
+            return error_response(e, status=400)
+
+    @route("detach_host_link", "/api/hosts/link/detach", methods=["POST", "OPTIONS"])
+    def detach_host_link(self, req, **kwargs):
+        if req.method == "OPTIONS":
+            return cors_preflight()
+
+        try:
+            body = read_json_body(req)
+            result = self.sdn_app.detach_host_link(body)
+            return success_response(result)
+        except Exception as e:
+            self.sdn_app.logger.exception("Error desconectando host-link: %s", e)
             return error_response(e, status=400)
 
     @route("forget_host", "/api/hosts/forget/{mac}", methods=["DELETE", "OPTIONS"])

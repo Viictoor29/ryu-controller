@@ -41,6 +41,22 @@ class LinkServiceMixin:
         if n2 in self.net.hosts:
             n2.configDefault()
 
+        ryu_host_link_result = None
+        try:
+            if n1 in self.net.hosts and n2 in self.net.switches:
+                ryu_host_link_result = self.notify_ryu_host_link_attached(
+                    n1,
+                    self.endpoint_from_intf(link.intf2),
+                )
+            elif n2 in self.net.hosts and n1 in self.net.switches:
+                ryu_host_link_result = self.notify_ryu_host_link_attached(
+                    n2,
+                    self.endpoint_from_intf(link.intf1),
+                )
+        except Exception as e:
+            print(f"[mininet-api] Error avisando a Ryu para conectar host-link: {e}")
+            ryu_host_link_result = {"error": str(e)}
+
         return {
             "node1": node1,
             "node2": node2,
@@ -50,6 +66,7 @@ class LinkServiceMixin:
             "intf2": str(link.intf2),
             "link": str(link),
             "ofports": ofport_results,
+            "ryu_host_link_result": ryu_host_link_result,
             "state": "created",
         }
 
@@ -71,10 +88,10 @@ class LinkServiceMixin:
                 raise ValueError(f"No existe enlace entre {node1} y {node2} con los puertos indicados")
 
             removed = []
-            ryu_forget_results = []
+            ryu_link_results = []
 
             for link in list(links):
-                ryu_forget_results.extend(self.notify_ryu_before_link_delete(link))
+                ryu_link_results.extend(self.notify_ryu_before_link_delete(link))
                 removed.append({
                     "link": str(link),
                     "intf1": str(link.intf1),
@@ -87,7 +104,7 @@ class LinkServiceMixin:
             return {
                 "removed": removed,
                 "removed_count": len(removed),
-                "ryu_forget_results": ryu_forget_results,
+                "ryu_link_results": ryu_link_results,
                 "state": "deleted",
             }
 

@@ -28,24 +28,33 @@ class ScenarioService:
     # ---------------------------------------------------------------------
     # Export
     # ---------------------------------------------------------------------
-    def export_current_topology(self, name=None, include_runtime=True):
+    def export_current_topology(self, name=None, include_runtime=False, include_controller=False):
         topology = self.app.topology_service.get_topology_data()
         mininet = self._build_mininet_from_topology(topology)
         policies = self._build_policies_from_topology(topology)
 
-        return {
+        scenario = {
             "kind": "sdn_topology_scenario",
             "version": 1,
             "name": name or "exported-topology",
             "exported_at": int(time.time()),
-            "topology": topology if include_runtime else None,
             "mininet": mininet,
             "policies": policies,
-            "controller": {
+        }
+
+        # Foto visual/runtime de Ryu. No hace falta para reimportar.
+        if include_runtime:
+            scenario["topology"] = topology
+
+        # Estado interno del controlador. Útil para debug, no para escenario normal.
+        if include_controller:
+            scenario["controller"] = {
                 "blocked_ips": sorted(getattr(self.app, "blocked_ips", set())),
                 "deleted_host_macs": sorted(getattr(self.app, "deleted_host_macs", set())),
-            },
-        }
+                "detached_host_macs": sorted(getattr(self.app, "detached_host_macs", set())),
+            }
+
+        return scenario
 
     def _build_mininet_from_topology(self, topology):
         nodes = topology.get("nodes", []) or []
@@ -248,6 +257,7 @@ class ScenarioService:
             "scenario": scenario,
             "mininet": None,
             "controller_reset": None,
+            "host_restore": None,
             "host_cleanup": None,
             "wait": None,
             "policies": None,
@@ -267,7 +277,9 @@ class ScenarioService:
                 preserve_blocked_ips=preserve_blocked_ips,
                 flush_flows=True,
             )
-        
+
+        result["host_restore"] = self.restore_hosts_from_scenario(scenario)
+
         expected_host_macs = {
             str(host.get("mac")).strip().lower()
             for host in scenario.get("mininet", {}).get("hosts", [])
@@ -291,7 +303,75 @@ class ScenarioService:
         if pingall:
             result["pingall"] = self.app.call_mininet_pingall()
 
-        return result
+        response_mode = str(options.get("response", "summary")).lower()
+        if response_mode in ("full", "verbose", "debug"):
+            return result
+
+        return self.compact_import_result(result)
+    
+    def compact_import_result(self, result):
+        scenario = result.get("scenario", {}) or {}
+        mininet = scenario.get("mininet", {}) or {}
+
+        mininet_result = result.get("mininet") or {}
+        mininet_body = mininet_result.get("body", {}) if isinstance(mininet_result, dict) else {}
+        mininet_data = mininet_body.get("data", {}) if isinstance(mininet_body, dict) else {}
+
+        created = mininet_data.get("created", {}) or {}
+        clear = mininet_data.get("clear", {}) or {}
+
+        host_restore = result.get("host_restore") or {}
+        host_cleanup = result.get("host_cleanup") or {}
+        wait = result.get("wait") or {}
+        policies = result.get("policies") or {}
+
+        return {
+            "state": "imported",
+            "name": scenario.get("name"),
+            "counts": {
+                "switches": len(mininet.get("switches", []) or []),
+                "hosts": len(mininet.get("hosts", []) or []),
+                "switch_links": len(mininet.get("links", []) or []),
+
+                "created_switches": len(created.get("switches", []) or []),
+                "created_hosts": len(created.get("hosts", []) or []),
+                "created_links": len(created.get("links", []) or []),
+
+                "removed_links": len(clear.get("removed_links", []) or []),
+                "removed_hosts": len(clear.get("removed_hosts", []) or []),
+                "removed_switches": len(clear.get("removed_switches", []) or []),
+            },
+            "hosts": [
+                {
+                    "name": host.get("name"),
+                    "mac": host.get("mac"),
+                    "ipv4": host.get("ipv4", []),
+                    "connected": host.get("connected"),
+                    "state": host.get("state"),
+                }
+                for host in host_restore.get("restored", []) or []
+            ],
+            "detached_host_macs": host_restore.get("detached_host_macs", []),
+            "stale_macs_hidden": host_cleanup.get("stale_macs_hidden", []),
+            "deleted_host_macs": host_cleanup.get("deleted_host_macs", []),
+            "ready": wait.get("ready"),
+            "wait": {
+                "switches_ready": wait.get("switches_ready"),
+                "links_ready": wait.get("links_ready"),
+                "hosts_ready": wait.get("hosts_ready"),
+                "expected_host_count": wait.get("expected_host_count"),
+                "active_host_count": wait.get("active_host_count"),
+                "timeout": wait.get("timeout"),
+            },
+            "policies": {
+                "disabled_links": len(policies.get("disabled_links", []) or []),
+                "disabled_ports": len(policies.get("disabled_ports", []) or []),
+                "tc": len(policies.get("tc", []) or []),
+                "blocked_ips": len(policies.get("blocked_ips", []) or []),
+                "errors": policies.get("errors", []),
+            },
+            "pingall": result.get("pingall"),
+        }
 
     def normalize_import_payload(self, payload):
         if not isinstance(payload, dict):
@@ -699,3 +779,98 @@ class ScenarioService:
     def _looks_hex_dpid(self, dpid):
         text = str(dpid).strip().lower()
         return text.startswith("0x") or any(ch in text for ch in "abcdef")
+
+    def restore_hosts_from_scenario(self, scenario):
+        restored = []
+
+        mininet = scenario.get("mininet", {}) or {}
+        hosts = mininet.get("hosts", []) or []
+        switches = mininet.get("switches", []) or []
+
+        switch_dpid_by_name = {
+            str(sw.get("name")).strip().lower(): str(sw.get("dpid"))
+            for sw in switches
+            if sw.get("name") and sw.get("dpid") is not None
+        }
+
+        for host in hosts:
+            if not isinstance(host, dict):
+                continue
+
+            mac = str(host.get("mac") or "").strip().lower()
+            if not mac:
+                continue
+
+            name = host.get("name")
+
+            ipv4 = host.get("ipv4")
+            if ipv4 is None:
+                ipv4 = host.get("ip")
+
+            ipv6 = host.get("ipv6")
+
+            switch_name = host.get("switch")
+            switch_name = str(switch_name).strip().lower() if switch_name else None
+
+            switch_dpid = host.get("switch_dpid")
+            if switch_dpid is None and switch_name:
+                switch_dpid = switch_dpid_by_name.get(switch_name)
+
+            switch_port = host.get("switch_port")
+
+            connected = bool(
+                switch_name
+                or switch_dpid is not None
+                or switch_port is not None
+            )
+
+            record = self.app.remember_host(
+                mac=mac,
+                name=name,
+                ipv4=ipv4,
+                ipv6=ipv6,
+                connected=connected,
+                source="scenario",
+            )
+
+            # Si está en el escenario importado, no debe seguir marcado como borrado.
+            self.app.deleted_host_macs.discard(mac)
+
+            if connected:
+                self.app.detached_host_macs.discard(mac)
+
+                if switch_dpid is not None and switch_port is not None:
+                    key = (mac, str(switch_dpid), int(switch_port))
+                    self.app.host_links_inventory[key] = {
+                        "host_mac": mac,
+                        "switch": str(switch_dpid),
+                        "switch_port": int(switch_port),
+                        "enabled": True,
+                        "discovered": True,
+                        "last_seen": int(time.time()),
+                        "source": "scenario",
+                    }
+            else:
+                self.app.detached_host_macs.add(mac)
+
+                self.app.host_links_inventory = {
+                    key: value
+                    for key, value in self.app.host_links_inventory.items()
+                    if str(value.get("host_mac", "")).strip().lower() != mac
+                }
+
+            restored.append({
+                "name": record.get("name"),
+                "mac": mac,
+                "ipv4": record.get("ipv4", []),
+                "ipv6": record.get("ipv6", []),
+                "connected": connected,
+                "state": "connected" if connected else "disconnected",
+            })
+
+        return {
+            "restored_count": len(restored),
+            "restored": restored,
+            "deleted_host_macs": sorted(self.app.deleted_host_macs),
+            "detached_host_macs": sorted(self.app.detached_host_macs),
+        }

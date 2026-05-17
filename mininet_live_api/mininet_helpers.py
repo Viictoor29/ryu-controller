@@ -29,15 +29,49 @@ class MininetHelpersMixin:
 
     def safe_host_mac(self, host):
         try:
-            return host.MAC()
+            mac = host.MAC()
+            if mac:
+                return str(mac)
         except Exception:
+            pass
+
+        params = getattr(host, "params", {}) or {}
+        mac = params.get("mac") or params.get("MAC")
+        return str(mac) if mac else None
+
+    def _clean_host_ip(self, value):
+        if value is None:
             return None
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                cleaned = self._clean_host_ip(item)
+                if cleaned:
+                    return cleaned
+            return None
+
+        text = str(value).strip()
+        if not text:
+            return None
+
+        # Mininet a veces guarda la IP como "10.0.0.1/8".
+        # La topología visual espera la IP limpia.
+        return text.split("/", 1)[0]
 
     def safe_host_ip(self, host):
         try:
-            return host.IP()
+            ip = self._clean_host_ip(host.IP())
+            if ip:
+                return ip
         except Exception:
-            return None
+            pass
+
+        params = getattr(host, "params", {}) or {}
+        for key in ("ip", "ipv4", "ipv4_address"):
+            ip = self._clean_host_ip(params.get(key))
+            if ip:
+                return ip
+
+        return None
 
     def mac_from_host_name(self, name):
         m = re.search(r"\d+$", str(name))
