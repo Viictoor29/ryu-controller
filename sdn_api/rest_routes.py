@@ -84,6 +84,7 @@ class SDNRestController(ControllerBase):
             result = self.sdn_app.reset_runtime_state(
                 preserve_blocked_ips=body.get("preserve_blocked_ips", False),
                 flush_flows=body.get("flush_flows", True),
+                clear_deleted_hosts=body.get("clear_deleted_hosts", False),
             )
             return success_response(result)
         except Exception as e:

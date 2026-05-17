@@ -96,7 +96,12 @@ class SDNControllerAPI(app_manager.RyuApp):
         self.stp_ready_since = None
         self.stp_last_change = time.time()
 
-    def reset_runtime_state(self, preserve_blocked_ips=False, flush_flows=True):
+    def reset_runtime_state(
+        self,
+        preserve_blocked_ips=False,
+        flush_flows=True,
+        clear_deleted_hosts=False,
+    ):
         preserved_blocked_ips = set(self.blocked_ips) if preserve_blocked_ips else set()
 
         self.links_inventory.clear()
@@ -110,6 +115,9 @@ class SDNControllerAPI(app_manager.RyuApp):
         self.blocked_ports.clear()
 
         self.blocked_ips = preserved_blocked_ips
+
+        if clear_deleted_hosts:
+            self.deleted_host_macs.clear()
 
         if flush_flows:
             for datapath in list(self.datapaths.values()):
@@ -127,6 +135,7 @@ class SDNControllerAPI(app_manager.RyuApp):
         return {
             "state": "runtime_reset",
             "preserve_blocked_ips": bool(preserve_blocked_ips),
+            "clear_deleted_hosts": bool(clear_deleted_hosts),
             "blocked_ips": sorted(self.blocked_ips),
             "deleted_host_macs": sorted(self.deleted_host_macs),
             "datapaths_connected": sorted(str(dpid) for dpid in self.datapaths.keys()),
