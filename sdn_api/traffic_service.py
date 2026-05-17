@@ -180,7 +180,13 @@ class TrafficService:
         rtt_max = None
         rtt_mdev = None
 
-        m = re.search(r"(\d+)\s+packets transmitted,\s+(\d+)\s+received,\s+([0-9.]+)%\s+packet loss", out)
+        m = re.search(
+            r"(\d+)\s+packets transmitted,\s+"
+            r"(\d+)\s+(?:packets\s+)?received,"
+            r"(?:\s+\+\d+\s+errors,)?\s+"
+            r"([0-9.]+)%\s+packet loss",
+            out
+        )
         if m:
             transmitted = int(m.group(1))
             received = int(m.group(2))
@@ -335,23 +341,50 @@ class TrafficService:
 
             jitter_match = re.search(r"([0-9.]+)\s+ms\s+\d+/\s*\d+\s+\(([0-9.]+)%\)", out)
 
+            result = {
+                "transfer": transfer_match[-1] if transfer_match else None,
+                "bandwidth": bandwidth_match[-1] if bandwidth_match else None,
+                "jitter_ms": float(jitter_match.group(1)) if jitter_match else None,
+                "loss_percent": float(jitter_match.group(2)) if jitter_match else None
+            }
+
+            stderr_lower = (err or "").lower()
+            stdout_lower = (out or "").lower()
+
+            error_markers = (
+                "failed",
+                "error",
+                "no route",
+                "network is unreachable",
+                "connection refused",
+                "connection timed out",
+                "unable to connect",
+                "connect failed",
+            )
+
+            has_error = any(
+                marker in stderr_lower or marker in stdout_lower
+                for marker in error_markers
+            )
+
+            success = (
+                rc == 0
+                and not has_error
+                and result["bandwidth"] is not None
+            )
+
             return {
                 "src_host": src_name,
                 "dst_host": dst_name,
                 "dst_ip": dst_ip,
                 "command": " ".join(cmd),
                 "return_code": rc,
-                "success": rc == 0,
+                "success": success,
                 "udp": bool(udp),
                 "duration_seconds": int(duration),
                 "port": int(port),
                 "bandwidth_requested": bandwidth if udp else None,
-                "result": {
-                    "transfer": transfer_match[-1] if transfer_match else None,
-                    "bandwidth": bandwidth_match[-1] if bandwidth_match else None,
-                    "jitter_ms": float(jitter_match.group(1)) if jitter_match else None,
-                    "loss_percent": float(jitter_match.group(2)) if jitter_match else None
-                },
+                "result": result,
                 "stdout": out,
                 "stderr": err
             }

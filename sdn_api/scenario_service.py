@@ -118,6 +118,7 @@ class ScenarioService:
     def _build_policies_from_topology(self, topology):
         policies = {
             "disabled_links": [],
+            "disabled_ports": [],
             "tc": [],
             "blocked_ips": sorted(getattr(self.app, "blocked_ips", set())),
         }
@@ -145,6 +146,21 @@ class ScenarioService:
             elif edge.get("type") == "host-link":
                 dpid = self._dpid_from_switch_id(edge.get("target-s"))
                 port_no = edge.get("s-port")
+
+                if port_no is not None and (
+                    edge.get("admin_state") == "down"
+                    or edge.get("enabled") is False
+                    or edge.get("state") == "down"
+                ):
+                    policies["disabled_ports"].append({
+                        "port": {
+                            "dpid": str(dpid),
+                            "port_no": int(port_no),
+                        },
+                        "host": edge.get("source-h"),
+                        "state": edge.get("state", "down"),
+                    })
+
                 tc = edge.get("tc_sw_port") or {}
                 if self._has_tc(tc) and port_no is not None:
                     policies["tc"].append({
@@ -406,10 +422,11 @@ class ScenarioService:
         policies = policies or {}
         return {
             "disabled_links": list(policies.get("disabled_links", []) or []),
+            "disabled_ports": list(policies.get("disabled_ports", []) or []),
             "tc": list(policies.get("tc", []) or []),
             "blocked_ips": list(policies.get("blocked_ips", []) or []),
         }
-
+    
     def _validate_scenario(self, scenario):
         errors = []
         mininet = scenario.get("mininet", {})
@@ -467,6 +484,7 @@ class ScenarioService:
         policies = policies or {}
         results = {
             "disabled_links": [],
+            "disabled_ports": [],
             "tc": [],
             "blocked_ips": [],
             "errors": [],
@@ -477,7 +495,27 @@ class ScenarioService:
                 result = self.app.topology_service.disable_link(link["src"], link["dst"])
                 results["disabled_links"].append(result)
             except Exception as e:
-                results["errors"].append({"policy": "disabled_link", "item": link, "error": str(e)})
+                results["errors"].append({
+                    "policy": "disabled_link",
+                    "item": link,
+                    "error": str(e),
+                })
+
+        for item in policies.get("disabled_ports", []) or []:
+            try:
+                port = item.get("port", item)
+                result = self.app.topology_service.set_port_state(
+                    port.get("dpid"),
+                    port.get("port_no"),
+                    up=False,
+                )
+                results["disabled_ports"].append(result)
+            except Exception as e:
+                results["errors"].append({
+                    "policy": "disabled_ports",
+                    "item": item,
+                    "error": str(e),
+                })
 
         for rule in policies.get("tc", []) or []:
             try:
@@ -499,13 +537,21 @@ class ScenarioService:
                     )
                 results["tc"].append(result)
             except Exception as e:
-                results["errors"].append({"policy": "tc", "item": rule, "error": str(e)})
+                results["errors"].append({
+                    "policy": "tc",
+                    "item": rule,
+                    "error": str(e),
+                })
 
         for ip in policies.get("blocked_ips", []) or []:
             try:
                 results["blocked_ips"].append(self.app.block_ip_traffic(ip))
             except Exception as e:
-                results["errors"].append({"policy": "blocked_ip", "item": ip, "error": str(e)})
+                results["errors"].append({
+                    "policy": "blocked_ip",
+                    "item": ip,
+                    "error": str(e),
+                })
 
         return results
 
