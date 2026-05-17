@@ -49,9 +49,12 @@ class SDNRestController(ControllerBase):
                 include_runtime=include_runtime,
                 include_controller=include_controller,
             )
+
+            return success_response(body)
+
         except Exception as e:
             self.sdn_app.logger.exception("Error en GET /api/topology/export: %s", e)
-            return error_response(e, status=500)
+        return error_response(e, status=500)
 
     @route("topology_validate", "/api/topology/validate", methods=["POST", "OPTIONS"])
     def validate_topology(self, req, **kwargs):
