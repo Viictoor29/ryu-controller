@@ -407,7 +407,7 @@ class TopologyService:
             if stp_state == 0 and admin_state == "up":
                 continue
 
-            if not discovered or not enabled:
+            if not discovered:
                 continue
 
             edges.append({

@@ -2,6 +2,7 @@ import time
 import json
 import ipaddress
 import urllib.request
+import urllib.error
 
 from ryu.base import app_manager
 from ryu.controller import ofp_event
@@ -287,8 +288,26 @@ class SDNControllerAPI(app_manager.RyuApp):
             method="POST",
         )
 
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                raw = resp.read().decode("utf-8")
+                return json.loads(raw)
+
+        except urllib.error.URLError as e:
+            print(f"[controller-api] Mininet API no disponible para pingall: {e}")
+            return {
+                "ok": False,
+                "error": str(e),
+                "reason": "mininet_api_unavailable",
+            }
+
+        except Exception as e:
+            print(f"[controller-api] Error ejecutando pingall en Mininet: {e}")
+            return {
+                "ok": False,
+                "error": str(e),
+                "reason": "pingall_failed",
+            }
 
     def is_port_blocked(self, dpid, port_no):
         return (int(dpid), int(port_no)) in self.blocked_ports

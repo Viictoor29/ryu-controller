@@ -8,19 +8,44 @@ from mininet.node import RemoteController, OVSSwitch
 from mininet.cli import CLI
 from mininet.log import setLogLevel
 
-from mininet_api_service import MininetAPIService
+from mininet_live_api import MininetAPIService
 
 
 def load_topology(module_name, class_name):
-    try:
-        module = importlib.import_module(module_name)
-    except ImportError as e:
-        raise ImportError(f"No se pudo importar el módulo '{module_name}': {e}")
+    """
+    Carga una topología por nombre de módulo y clase.
+
+    Compatibilidad:
+    - Nuevo formato recomendado: --module topologies.simple_topo
+    - Formato antiguo:          --module simple_topo
+      Si falla el import directo, se intenta topologies.<module_name>.
+    """
+    tried_modules = []
+
+    candidates = [module_name]
+    if "." not in module_name:
+        candidates.append(f"topologies.{module_name}")
+
+    last_error = None
+    for candidate in candidates:
+        tried_modules.append(candidate)
+        try:
+            module = importlib.import_module(candidate)
+            break
+        except ImportError as e:
+            last_error = e
+    else:
+        raise ImportError(
+            f"No se pudo importar el módulo de topología. Intentados: {', '.join(tried_modules)}. "
+            f"Último error: {last_error}"
+        )
 
     try:
         topo_class = getattr(module, class_name)
     except AttributeError:
-        raise AttributeError(f"El módulo '{module_name}' no tiene la clase '{class_name}'")
+        raise AttributeError(
+            f"El módulo '{module.__name__}' no tiene la clase '{class_name}'"
+        )
 
     return topo_class()
 
