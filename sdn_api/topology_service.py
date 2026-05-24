@@ -247,6 +247,7 @@ class TopologyService:
         seen_nodes = set()
 
         active_switch_ids = {str(dpid) for dpid in self.app.datapaths.keys()}
+        blocked_ipv4_rules = sorted(str(ip) for ip in getattr(self.app, "blocked_ips", set()))
 
         def normalize_list(value):
             if value is None:
@@ -310,9 +311,12 @@ class TopologyService:
 
             if sw_id not in seen_nodes:
                 nodes.append({
-                    "id": "S" + sw_id,
-                    "type": "switch"
-                })
+                "id": "S" + sw_id,
+                "type": "switch",
+                "traffic_filters": {
+                    "blocked_ipv4": blocked_ipv4_rules
+                }
+            })
                 seen_nodes.add(sw_id)
 
         for dpid in sorted(self.app.datapaths.keys()):
@@ -320,9 +324,12 @@ class TopologyService:
 
             if sw_id not in seen_nodes:
                 nodes.append({
-                    "id": "S" + sw_id,
-                    "type": "switch"
-                })
+                "id": "S" + sw_id,
+                "type": "switch",
+                "traffic_filters": {
+                    "blocked_ipv4": blocked_ipv4_rules
+                }
+            })
                 seen_nodes.add(sw_id)
 
         deleted_host_macs = {
@@ -504,12 +511,6 @@ class TopologyService:
             if stp_state == 0 and admin_state == "up":
                 continue
 
-            host_record = getattr(self.app, "hosts_inventory", {}).get(host_mac, {})
-            ipv4_list = normalize_list(host_record.get("ipv4"))
-            blocked_ips = getattr(self.app, "blocked_ips", set())
-            blocked_ipv4 = [ip for ip in ipv4_list if ip in blocked_ips]
-            ip_blocked = bool(blocked_ipv4)
-
             edges.append({
                 "type": "host-link",
                 "source-h": "H" + h_id,
@@ -524,8 +525,6 @@ class TopologyService:
                 "admin_state": admin_state,
                 "stp_state": stp_state,
                 "stp_blocked": stp_blocked,
-                "host_ip_blocked": ip_blocked,
-                "blocked_ipv4": blocked_ipv4,
                 "tc_sw_port": switch_tc,
                 "degradation-link": port_status
             })
