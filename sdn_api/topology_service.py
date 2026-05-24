@@ -288,10 +288,7 @@ class TopologyService:
                     "ipv6": ipv6_list,
                     "connected": bool(connected),
                     "state": "connected" if connected else "disconnected",
-                    "ip_blocked": ip_blocked,
-                    "traffic_blocked": ip_blocked,
-                    "blocked_ipv4": blocked_ipv4,
-                    "traffic_state": "blocked" if ip_blocked else "allowed"
+                    "ip_blocked": ip_blocked
                 })
                 seen_nodes.add(mac)
 
