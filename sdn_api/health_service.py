@@ -86,11 +86,14 @@ class HealthService:
                     **port_health
                 })
 
-            switch_status = "healthy"
-            if (total_rx_errors + total_tx_errors) > 0:
+            port_statuses = [port.get("status") for port in ports]
+
+            if "degraded" in port_statuses:
                 switch_status = "degraded"
-            elif (total_rx_dropped + total_tx_dropped) > 0:
+            elif "warning" in port_statuses:
                 switch_status = "warning"
+            else:
+                switch_status = "healthy"
 
             switches_health.append({
                 "dpid": dpid_str,
