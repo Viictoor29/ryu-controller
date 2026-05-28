@@ -365,6 +365,19 @@ class TopologyService:
             for mac in getattr(self.app, "detached_host_macs", set())
         }
 
+        def is_mininet_known_host(mac):
+            mac = str(mac or "").strip().lower()
+
+            host_record = getattr(self.app, "hosts_inventory", {}).get(mac, {})
+            if host_record.get("source") == "mininet":
+                return True
+
+            return any(
+                str(link.get("host_mac", "")).lower() == mac
+                and link.get("source") == "mininet"
+                for link in getattr(self.app, "host_links_inventory", {}).values()
+            )
+
         try:
             raw_hosts = self.app.topology_get_hosts()
             seen_host_ports = {}
@@ -377,6 +390,11 @@ class TopologyService:
 
                 ipv4_list = list(host.ipv4) if hasattr(host, "ipv4") else []
                 ipv6_list = list(host.ipv6) if hasattr(host, "ipv6") else []
+
+                # Evita hosts fantasma aprendidos por Ryu.
+                # Si no tiene IPv4 y no viene de Mininet, no lo guardamos ni lo pintamos.
+                if not ipv4_list and not is_mininet_known_host(host_mac):
+                    continue
 
                 try:
                     self.app.remember_host(
