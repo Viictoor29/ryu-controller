@@ -178,6 +178,36 @@ class TopologyService:
             "removed_from_inventory": removed is not None,
             "state": "deleted"
         }
+    
+    def _set_host_port_inventory_state(self, dpid, port_no, up=True):
+        """
+        Mantiene coherente el inventario visual de enlaces host-switch cuando
+        se cambia administrativamente el estado de un puerto.
+        """
+        dpid_str = str(dpid)
+        port_no = int(port_no)
+
+        for host_link in getattr(self.app, "host_links_inventory", {}).values():
+            try:
+                matches = (
+                    str(host_link.get("switch")) == dpid_str
+                    and int(host_link.get("switch_port")) == port_no
+                )
+            except (TypeError, ValueError):
+                continue
+
+            if not matches:
+                continue
+
+            host_link["enabled"] = bool(up)
+
+            if up:
+                host_link["discovered"] = True
+            elif host_link.get("source") in ("mininet", "scenario"):
+                # Sigue siendo un enlace esperado/importado; se pinta como down.
+                host_link["discovered"] = True
+            else:
+                host_link["discovered"] = False
 
     def set_port_state(self, dpid, port_no, up=True):
         dpid = int(dpid)
@@ -210,6 +240,7 @@ class TopologyService:
         dpid_str = str(dpid)
         self.app.port_admin_state.setdefault(dpid_str, {})
         self.app.port_admin_state[dpid_str][port_no] = "up" if up else "down"
+        self._set_host_port_inventory_state(dpid, port_no, up=up)
 
         if not up:
             self.app.blocked_ports.discard((dpid, port_no))

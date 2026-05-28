@@ -871,7 +871,12 @@ class SDNControllerAPI(app_manager.RyuApp):
                     and int(host_link.get("switch_port")) == port_no
                 ):
                     host_link["enabled"] = False
-                    host_link["discovered"] = False
+
+                    if host_link.get("source") in ("mininet", "scenario"):
+                        # Enlace esperado/importado: mantenerlo visible y pintarlo como down.
+                        host_link["discovered"] = True
+                    else:
+                        host_link["discovered"] = False
 
             self.flush_switch_learning(dp)
 

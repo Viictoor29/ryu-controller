@@ -377,9 +377,12 @@ class ScenarioService:
         if not isinstance(payload, dict):
             raise ValueError("El body debe ser un objeto JSON")
 
-        # Permite {"scenario": {...}, "options": {...}}
+        # Permite {"scenario": {...}, "options": {...}} y exports guardados como
+        # {"name": "...", "description": "...", "data": {...}, ...}.
         if isinstance(payload.get("scenario"), dict):
             payload = payload["scenario"]
+        elif isinstance(payload.get("data"), dict):
+            payload = payload["data"]
 
         if isinstance(payload.get("mininet"), dict):
             mininet = payload["mininet"]
