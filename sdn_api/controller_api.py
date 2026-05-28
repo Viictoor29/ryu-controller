@@ -798,12 +798,16 @@ class SDNControllerAPI(app_manager.RyuApp):
 
         if current.get("state") == "disabled" or current.get("manual_disabled"):
             current["enabled"] = False
-            current["discovered"] = True
+            current["discovered"] = False
             current["state"] = "disabled"
-        else:
+            current["manual_disabled"] = True
+        elif current.get("state") != "deleted":
+            # EventLinkDelete solo significa que LLDP ya no descubre el enlace.
+            # También ocurre al apagar un puerto, así que no lo usamos para borrar
+            # visualmente. El borrado real lo hace /api/links/forget desde Mininet.
             current["enabled"] = False
             current["discovered"] = False
-            current["state"] = "deleted"
+            current["state"] = "disconnected"
 
         current["last_seen"] = int(time.time())
 
@@ -854,6 +858,12 @@ class SDNControllerAPI(app_manager.RyuApp):
                 ):
                     link["enabled"] = False
                     link["discovered"] = False
+
+                    if link.get("manual_disabled") or link.get("state") == "disabled":
+                        link["state"] = "disabled"
+                        link["manual_disabled"] = True
+                    elif link.get("state") != "deleted":
+                        link["state"] = "disconnected"
 
             for host_link in self.host_links_inventory.values():
                 if (

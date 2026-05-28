@@ -62,9 +62,14 @@ class TopologyService:
         """
         Sincroniza el inventario con los enlaces descubiertos por Ryu.
 
-        Diferencia importante:
-        - disabled/manual_disabled: enlace apagado desde API, debe seguir visible.
-        - deleted: enlace eliminado físicamente, no debe mostrarse en topología.
+        Ryu deja de descubrir un enlace tanto si el cable/enlace ha desaparecido
+        como si lo apagamos administrativamente con OFPPortMod. Por eso NO se
+        debe interpretar la ausencia en get_link() como borrado físico.
+
+        Regla de negocio:
+        - disabled/manual_disabled: apagado desde la API de Ryu, sigue visible.
+        - disconnected: Ryu no lo ve ahora mismo, sigue visible como caído.
+        - deleted: solo lo marca /api/links/forget, llamado por la API de Mininet.
         """
         valid_keys = set()
         links = self.app.topology_get_links()
@@ -79,6 +84,25 @@ class TopologyService:
             valid_keys.add(key)
 
             current = self.app.links_inventory.setdefault(key, {})
+
+            # Si el enlace fue apagado manualmente pero LLDP todavía lo ve durante
+            # unos instantes, no reactivar el inventario hasta que se llame a enable.
+            if current.get("manual_disabled") or current.get("state") == "disabled":
+                current.update({
+                    "source": src_dpid,
+                    "target": dst_dpid,
+                    "src_port": src_port,
+                    "dst_port": dst_port,
+                    "enabled": False,
+                    "discovered": False,
+                    "state": "disabled",
+                    "manual_disabled": True,
+                })
+                continue
+
+            if current.get("state") == "deleted":
+                continue
+
             current.update({
                 "source": src_dpid,
                 "target": dst_dpid,
@@ -96,14 +120,17 @@ class TopologyService:
 
             link = self.app.links_inventory[key]
 
+            if link.get("state") == "deleted":
+                continue
+
+            link["enabled"] = False
+            link["discovered"] = False
+
             if link.get("state") == "disabled" or link.get("manual_disabled"):
-                link["enabled"] = False
-                link["discovered"] = True
                 link["state"] = "disabled"
-            elif link.get("state") != "deleted":
-                link["enabled"] = False
-                link["discovered"] = False
-                link["state"] = "deleted"
+                link["manual_disabled"] = True
+            else:
+                link["state"] = "disconnected"
 
     def set_link_inventory_state(self, src, dst, enabled):
         src = self.normalize_endpoint(src, "src")
@@ -198,10 +225,10 @@ class TopologyService:
         src = self.normalize_endpoint(src, "src")
         dst = self.normalize_endpoint(dst, "dst")
 
+        self.set_link_inventory_state(src, dst, enabled=False)
+
         result_src = self.set_port_state(src["dpid"], src["port_no"], up=False)
         result_dst = self.set_port_state(dst["dpid"], dst["port_no"], up=False)
-
-        self.set_link_inventory_state(src, dst, enabled=False)
 
         return {
             "src": result_src,
@@ -532,7 +559,8 @@ class TopologyService:
             if inventory_state in ("deleted", "switch_removed"):
                 continue
 
-            if not link.get("discovered", False) and inventory_state != "disabled":
+            visible_when_not_discovered = {"disabled", "disconnected", "down"}
+            if not link.get("discovered", False) and inventory_state not in visible_when_not_discovered:
                 continue
 
             src_dpid = str(link["source"])
@@ -595,7 +623,11 @@ class TopologyService:
                 and dst_effective_state == "up"
             )
 
-            if src_effective_state == "down" or dst_effective_state == "down":
+            if inventory_state == "disabled":
+                state = "disabled"
+            elif inventory_state == "disconnected":
+                state = "disconnected"
+            elif src_effective_state == "down" or dst_effective_state == "down":
                 state = "down"
             elif "blocked_by_stp" in (src_effective_state, dst_effective_state):
                 state = "blocked_by_stp"
