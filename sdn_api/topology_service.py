@@ -170,12 +170,30 @@ class TopologyService:
             dst["dpid"], dst["port_no"]
         )
 
-        removed = self.app.links_inventory.pop(key, None)
+        removed = self.app.links_inventory.get(key)
+        current = self.app.links_inventory.setdefault(key, {
+            "source": src["dpid"],
+            "target": dst["dpid"],
+            "src_port": src["port_no"],
+            "dst_port": dst["port_no"],
+        })
+
+        current.update({
+            "source": src["dpid"],
+            "target": dst["dpid"],
+            "src_port": src["port_no"],
+            "dst_port": dst["port_no"],
+            "enabled": False,
+            "discovered": False,
+            "manual_disabled": False,
+            "state": "deleted",
+        })
 
         return {
             "src": src,
             "dst": dst,
             "removed_from_inventory": removed is not None,
+            "hidden_from_topology": True,
             "state": "deleted"
         }
     
