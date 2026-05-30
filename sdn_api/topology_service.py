@@ -1,3 +1,5 @@
+import re
+
 from rest_helpers import (
     make_link_key,
     normalize_endpoint,
@@ -301,19 +303,54 @@ class TopologyService:
         }
 
     def _host_number_from_mac(self, mac):
-        mac = str(mac).strip().lower()
-        parts = mac.split(":")
-        if len(parts) != 6:
+        """
+        Convención de hosts:
+        hN <-> 00:00:00:00:00:NN
+        """
+
+        mac = str(mac or "").strip().lower()
+
+        if not re.match(r"^00:00:00:00:00:[0-9a-f]{2}$", mac):
             return None
 
         try:
-            return str(int(parts[-1], 16))
+            number = int(mac.rsplit(":", 1)[-1], 16)
         except ValueError:
             return None
+
+        if number < 1:
+            return None
+
+        return str(number)
 
     def _host_name_from_mac(self, mac):
         num = self._host_number_from_mac(mac)
         return f"h{num}" if num is not None else None
+
+    def _expected_mac_from_host_name(self, name):
+        match = re.match(r"^h(\d+)$", str(name or "").strip().lower())
+        if not match:
+            return None
+
+        number = int(match.group(1))
+        if number < 1 or number > 255:
+            return None
+
+        return f"00:00:00:00:00:{number:02x}"
+
+
+    def _host_matches_name_mac_rule(self, mac, name=None):
+        mac = str(mac or "").strip().lower()
+        expected_name = self._host_name_from_mac(mac)
+
+        if expected_name is None:
+            return False
+
+        if name:
+            name = str(name).strip().lower()
+            return name == expected_name and self._expected_mac_from_host_name(name) == mac
+
+        return True
 
     def get_topology_data(self):
         self.sync_links_inventory()
@@ -426,6 +463,21 @@ class TopologyService:
                 and link.get("source") == "mininet"
                 for link in getattr(self.app, "host_links_inventory", {}).values()
             )
+        
+        def drop_invalid_host(mac, reason="invalid_host_name_mac_rule"):
+            mac = str(mac or "").strip().lower()
+            if not mac:
+                return
+
+            self.app.hosts_inventory.pop(mac, None)
+            self.app.detached_host_macs.discard(mac)
+            self.app.deleted_host_macs.add(mac)
+            self.app.host_links_inventory = {
+                key: value
+                for key, value in self.app.host_links_inventory.items()
+                if str(value.get("host_mac", "")).strip().lower() != mac
+            }
+            self.app.logger.info("Host ignorado por %s: %s", reason, mac)
 
         try:
             raw_hosts = self.app.topology_get_hosts()
@@ -436,6 +488,11 @@ class TopologyService:
                 host_mac = str(getattr(host, "mac", "") or "").strip().lower()
                 if not host_mac or host_mac in deleted_host_macs:
                     continue
+
+                if not self._host_matches_name_mac_rule(host_mac):
+                    drop_invalid_host(host_mac)
+                    continue
+
 
                 ipv4_list = list(host.ipv4) if hasattr(host, "ipv4") else []
                 ipv6_list = list(host.ipv6) if hasattr(host, "ipv6") else []
@@ -511,6 +568,10 @@ class TopologyService:
             host_mac = str(host.mac).lower()
 
             if host_mac in deleted_host_macs or host_mac in detached_host_macs:
+                continue
+            
+            if not self._host_matches_name_mac_rule(host_mac):
+                drop_invalid_host(host_mac)
                 continue
 
             ipv4_list = list(host.ipv4) if hasattr(host, "ipv4") else []
