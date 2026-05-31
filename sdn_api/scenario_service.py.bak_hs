@@ -852,8 +852,6 @@ class ScenarioService:
                         "discovered": True,
                         "last_seen": int(time.time()),
                         "source": "scenario",
-                        "state": "up",
-                        "manual_disabled": False,
                     }
             else:
                 self.app.detached_host_macs.add(mac)

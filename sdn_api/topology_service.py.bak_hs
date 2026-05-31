@@ -203,10 +203,6 @@ class TopologyService:
         """
         Mantiene coherente el inventario visual de enlaces host-switch cuando
         se cambia administrativamente el estado de un puerto.
-
-        Igual que los enlaces switch-switch, un cambio de estado del puerto no
-        borra el enlace del inventario: solo cambia su estado visual. El borrado
-        real de un h-sw lo hacen /api/hosts/link/detach o /api/hosts/forget.
         """
         dpid_str = str(dpid)
         port_no = int(port_no)
@@ -224,9 +220,14 @@ class TopologyService:
                 continue
 
             host_link["enabled"] = bool(up)
-            host_link["manual_disabled"] = not bool(up)
-            host_link["discovered"] = bool(up)
-            host_link["state"] = "up" if up else "disabled"
+
+            if up:
+                host_link["discovered"] = True
+            elif host_link.get("source") in ("mininet", "scenario"):
+                # Sigue siendo un enlace esperado/importado; se pinta como down.
+                host_link["discovered"] = True
+            else:
+                host_link["discovered"] = False
 
     def set_port_state(self, dpid, port_no, up=True):
         dpid = int(dpid)
@@ -403,14 +404,6 @@ class TopologyService:
                     "ip_blocked": ip_blocked
                 })
                 seen_nodes.add(mac)
-            elif connected:
-                # Si el nodo ya se creó como desconectado, pero después pintamos
-                # un enlace h-sw persistente, actualizamos el estado del nodo.
-                for node in nodes:
-                    if node.get("id") == node_id and node.get("type") == "host":
-                        node["connected"] = True
-                        node["state"] = "connected"
-                        break
 
             return node_id
 
@@ -562,20 +555,14 @@ class TopologyService:
                 self.app.host_links_inventory.pop(key, None)
                 continue
 
-            inventory_state = host_link.get("state", "up")
-            if inventory_state in ("deleted", "switch_removed"):
+            # Los enlaces h-sw declarados por Mininet no deben apagarse solo porque
+            # Ryu todavía no haya reaprendido el host. Si no vienen de Mininet,
+            # se recalculan con los hosts descubiertos en este ciclo.
+            if host_link.get("source") == "mininet":
                 continue
 
-            # Igual que con los sw-sw: que Ryu no devuelva temporalmente el host
-            # no significa que el enlace h-sw se haya borrado. Puede ocurrir por
-            # STP/blocking, convergencia, falta de tráfico del host, etc.
-            # Mantenemos el inventario y solo marcamos que ahora no lo descubrió
-            # get_host(). El render decidirá el estado con admin/STP.
             host_link["discovered"] = False
-            host_link.setdefault("enabled", True)
-            host_link.setdefault("state", "disconnected")
-            if not host_link.get("manual_disabled") and inventory_state not in ("disabled",):
-                host_link["state"] = "disconnected"
+            host_link["enabled"] = False
 
         for host in hosts:
             host_mac = str(host.mac).lower()
@@ -610,26 +597,20 @@ class TopologyService:
             switch_port = int(host.port.port_no)
             host_link_key = (host_mac, str(switch_id), int(switch_port))
 
-            current_host_link = self.app.host_links_inventory.setdefault(host_link_key, {})
-            previous_source = current_host_link.get("source")
-            source = previous_source if previous_source in ("mininet", "scenario") else "ryu"
-            current_host_link.update({
+            self.app.host_links_inventory[host_link_key] = {
                 "host_mac": host_mac,
                 "switch": str(switch_id),
                 "switch_port": int(switch_port),
                 "enabled": True,
                 "discovered": True,
-                "source": source,
-                "state": "up",
-                "manual_disabled": False,
-            })
+                "source": "ryu"
+            }
 
         # Primero pintamos todos los hosts conocidos, incluidos los desconectados.
         connected_macs = {
             str(link.get("host_mac", "")).lower()
             for link in self.app.host_links_inventory.values()
-            if link.get("enabled")
-            and link.get("state", "up") not in ("deleted", "switch_removed", "disabled", "disconnected", "down")
+            if link.get("discovered") and link.get("enabled")
         }
 
         for mac in sorted(getattr(self.app, "hosts_inventory", {}).keys()):
@@ -644,21 +625,8 @@ class TopologyService:
             if host_mac in deleted_host_macs or host_mac in detached_host_macs:
                 continue
 
-            inventory_state = host_link.get("state", "up")
-            if inventory_state in ("deleted", "switch_removed"):
-                continue
-
             discovered = bool(host_link.get("discovered", False))
-            visible_when_not_discovered = {
-                "up",
-                "disabled",
-                "disconnected",
-                "down",
-                "blocked_by_stp",
-                "stp_unknown",
-                "stp_converging",
-            }
-            if not discovered and inventory_state not in visible_when_not_discovered:
+            if not discovered:
                 continue
 
             switch_id = str(host_link.get("switch"))
@@ -669,6 +637,8 @@ class TopologyService:
             switch_iface = self.get_interface_name(switch_id, switch_port)
             switch_tc = self.get_interface_tc_state(switch_iface)
 
+            add_host_node(host_mac, connected=True)
+
             port_stats = self.app.port_stats.get(switch_id, {}).get(switch_port, {})
             port_status = self.compute_port_status(port_stats)
 
@@ -678,33 +648,20 @@ class TopologyService:
             stp_blocked = self.app.is_port_blocked(switch_id, switch_port)
 
             enabled = (
-                bool(host_link.get("enabled", True))
-                and inventory_state not in ("disabled", "deleted", "switch_removed")
+                bool(host_link.get("enabled", False))
                 and admin_state == "up"
                 and stp_state != 0
             )
 
-            # Para h-sw, "not discovered" solo significa que get_host() no lo
-            # devolvió en este ciclo; no significa borrado físico. Calculamos el
-            # estado con el inventario persistente + STP/admin, igual que sw-sw.
-            port_effective_state = self._port_effective_state(
+            effective_state = self._port_effective_state(
                 switch_id,
                 switch_port,
-                discovered=True,
+                discovered=discovered,
                 enabled=enabled
             )
 
-            if inventory_state == "disabled":
-                effective_state = "disabled"
-            elif inventory_state == "disconnected" and not stp_blocked and stp_state not in (1, 2, 3):
-                effective_state = "disconnected"
-            else:
-                effective_state = port_effective_state
-
-            add_host_node(
-                host_mac,
-                connected=effective_state not in ("disabled", "disconnected", "down")
-            )
+            if stp_state == 0 and admin_state == "up":
+                continue
 
             edges.append({
                 "type": "host-link",

@@ -608,8 +608,7 @@ class SDNControllerAPI(app_manager.RyuApp):
                 if str(host_link.get("switch")) == str(dpid):
                     host_link["enabled"] = False
                     host_link["discovered"] = False
-                    host_link["state"] = "switch_removed"
-                    host_link["last_seen"] = int(time.time())
+                    self.host_links_inventory.pop(key, None)
 
             self.mark_stp_changed()
 
@@ -872,10 +871,12 @@ class SDNControllerAPI(app_manager.RyuApp):
                     and int(host_link.get("switch_port")) == port_no
                 ):
                     host_link["enabled"] = False
-                    host_link["discovered"] = False
-                    host_link["state"] = "disabled" if is_admin_down else "disconnected"
-                    host_link["manual_disabled"] = bool(is_admin_down)
-                    host_link["last_seen"] = int(time.time())
+
+                    if host_link.get("source") in ("mininet", "scenario"):
+                        # Enlace esperado/importado: mantenerlo visible y pintarlo como down.
+                        host_link["discovered"] = True
+                    else:
+                        host_link["discovered"] = False
 
             self.flush_switch_learning(dp)
 
@@ -976,8 +977,6 @@ class SDNControllerAPI(app_manager.RyuApp):
                 "discovered": True,
                 "last_seen": int(time.time()),
                 "source": "mininet",
-                "state": "up",
-                "manual_disabled": False,
             }
 
         self.logger.info("Host visible/conectado en topología: %s", mac)
