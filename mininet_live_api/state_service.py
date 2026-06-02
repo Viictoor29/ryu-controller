@@ -10,14 +10,16 @@ class StateServiceMixin:
                 "hosts": [host.name for host in sorted(self.net.hosts, key=lambda h: h.name)],
                 "switches": [sw.name for sw in sorted(self.net.switches, key=lambda s: s.name)],
                 "links": [str(link) for link in self.net.links],
-                "topology": self.export_topology_locked(),
+                # /status se consulta muchas veces desde el frontend; no hacemos
+                # llamadas extra a Ryu aquí para evitar latencia y más conexiones.
+                "topology": self.export_topology_locked(include_policies=False),
             }
 
     def export_topology(self):
         with self.lock:
-            return self.export_topology_locked()
+            return self.export_topology_locked(include_policies=True)
 
-    def export_topology_locked(self):
+    def export_topology_locked(self, include_policies=False):
         switches = []
         hosts = []
         links = []
@@ -74,7 +76,7 @@ class StateServiceMixin:
                 hosts_by_name[n2_name]["switch_port"] = p1
                 continue
 
-        return {
+        topology = {
             "kind": "mininet_live_topology",
             "exported_at": int(time.time()),
             "mininet": {
@@ -84,6 +86,16 @@ class StateServiceMixin:
             },
             "last_applied_scenario": self.last_applied_scenario,
         }
+
+        if include_policies:
+            topology["policies"] = {
+                "disabled_links": [],
+                "disabled_ports": [],
+                "tc": [],
+                "blocked_ips": self.get_ryu_blocked_ips(),
+            }
+
+        return topology
 
     def ping_all(self):
         with self.lock:

@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import time
 import urllib.error
@@ -125,11 +126,14 @@ class ScenarioService:
         }
 
     def _build_policies_from_topology(self, topology):
+        blocked_ips = set(getattr(self.app, "blocked_ips", set()))
+        blocked_ips.update(self._extract_blocked_ips_from_topology(topology))
+
         policies = {
             "disabled_links": [],
             "disabled_ports": [],
             "tc": [],
-            "blocked_ips": sorted(getattr(self.app, "blocked_ips", set())),
+            "blocked_ips": self._normalize_blocked_ips(blocked_ips),
         }
 
         for edge in topology.get("edges", []) or []:
@@ -407,6 +411,15 @@ class ScenarioService:
                 "Formato de topología no reconocido. Usa mininet, switches/hosts/links, topology o nodes/edges."
             )
 
+        # Compatibilidad con exports antiguos o visuales: algunas capturas guardaban
+        # el bloqueo en topology.nodes/edges o controller.blocked_ips, pero no en
+        # policies.blocked_ips. Al importar, reset_runtime_state() limpia el runtime;
+        # por eso hay que reconstruir esta política antes de aplicar el escenario.
+        policies = dict(policies or {})
+        blocked_ips = set(policies.get("blocked_ips", []) or [])
+        blocked_ips.update(self._extract_blocked_ips_from_payload(payload))
+        policies["blocked_ips"] = self._normalize_blocked_ips(blocked_ips)
+
         return {
             "kind": "sdn_topology_scenario",
             "version": int(payload.get("version", 1)),
@@ -507,8 +520,93 @@ class ScenarioService:
             "disabled_links": list(policies.get("disabled_links", []) or []),
             "disabled_ports": list(policies.get("disabled_ports", []) or []),
             "tc": list(policies.get("tc", []) or []),
-            "blocked_ips": list(policies.get("blocked_ips", []) or []),
+            "blocked_ips": self._normalize_blocked_ips(policies.get("blocked_ips", []) or []),
         }
+
+    def _normalize_blocked_ip_value(self, value):
+        text = str(value or "").strip()
+        if not text:
+            return None
+
+        # Acepta tanto "10.0.0.69" como "10.0.0.69/24" en ficheros viejos.
+        try:
+            if "/" in text:
+                ip = ipaddress.ip_interface(text).ip
+            else:
+                ip = ipaddress.ip_address(text)
+        except Exception:
+            # Conserva el valor para que block_ip_traffic() reporte el error exacto
+            # en apply_scenario_policies(), en lugar de ocultarlo silenciosamente.
+            return text
+
+        return str(ip) if ip.version == 4 else text
+
+    def _normalize_blocked_ips(self, values):
+        if values is None:
+            return []
+        if not isinstance(values, (list, tuple, set)):
+            values = [values]
+
+        normalized = []
+        seen = set()
+        for value in values:
+            ip = self._normalize_blocked_ip_value(value)
+            if ip and ip not in seen:
+                normalized.append(ip)
+                seen.add(ip)
+        return sorted(normalized)
+
+    def _extract_blocked_ips_from_payload(self, payload):
+        blocked = set()
+        if not isinstance(payload, dict):
+            return blocked
+
+        blocked.update(self._normalize_blocked_ips(payload.get("blocked_ips", [])))
+
+        controller = payload.get("controller") or {}
+        if isinstance(controller, dict):
+            blocked.update(self._normalize_blocked_ips(controller.get("blocked_ips", [])))
+
+        policies = payload.get("policies") or {}
+        if isinstance(policies, dict):
+            blocked.update(self._normalize_blocked_ips(policies.get("blocked_ips", [])))
+
+        topology = payload.get("topology") if isinstance(payload.get("topology"), dict) else payload
+        if isinstance(topology, dict):
+            blocked.update(self._extract_blocked_ips_from_topology(topology))
+
+        return blocked
+
+    def _extract_blocked_ips_from_topology(self, topology):
+        blocked = set()
+        if not isinstance(topology, dict):
+            return blocked
+
+        traffic_filters = topology.get("traffic_filters") or {}
+        if isinstance(traffic_filters, dict):
+            blocked.update(self._normalize_blocked_ips(traffic_filters.get("blocked_ipv4", [])))
+
+        for node in topology.get("nodes", []) or []:
+            if not isinstance(node, dict):
+                continue
+
+            filters = node.get("traffic_filters") or {}
+            if isinstance(filters, dict):
+                blocked.update(self._normalize_blocked_ips(filters.get("blocked_ipv4", [])))
+
+            blocked.update(self._normalize_blocked_ips(node.get("blocked_ipv4", [])))
+
+            if node.get("ip_blocked") or node.get("traffic_blocked") or node.get("traffic_state") == "blocked":
+                blocked.update(self._normalize_blocked_ips(node.get("ipv4", [])))
+                if node.get("ip"):
+                    blocked.update(self._normalize_blocked_ips(node.get("ip")))
+
+        for edge in topology.get("edges", []) or []:
+            if not isinstance(edge, dict):
+                continue
+            blocked.update(self._normalize_blocked_ips(edge.get("blocked_ipv4", [])))
+
+        return blocked
     
     def _validate_scenario(self, scenario):
         errors = []

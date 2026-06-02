@@ -48,6 +48,23 @@ class RyuClientMixin:
                 raise RuntimeError(f"Ryu respondió {resp.status}: {body}")
             return body
 
+    def get_ryu_json(self, path, timeout=2):
+        req = urllib.request.Request(f"{self.ryu_api_url}{path}", method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+            if resp.status < 200 or resp.status >= 300:
+                raise RuntimeError(f"Ryu respondió {resp.status}: {raw}")
+            return json.loads(raw) if raw else {}
+
+    def get_ryu_blocked_ips(self):
+        try:
+            body = self.get_ryu_json("/api/traffic/blocked-ips", timeout=2)
+            data = body.get("data", body) if isinstance(body, dict) else {}
+            return list(data.get("blocked_ips", []) or [])
+        except Exception as e:
+            print(f"[mininet-api] No se pudieron leer IPs bloqueadas desde Ryu: {e}")
+            return []
+
     def notify_ryu_before_link_delete(self, link):
         results = []
         ep1 = self.endpoint_from_intf(link.intf1)

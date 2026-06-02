@@ -4,6 +4,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import urllib.parse
 
 
+CLIENT_DISCONNECT_EXCEPTIONS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
+
+
 class HttpServerMixin:
     """Servidor HTTP y rutas REST de la API de Mininet."""
 
@@ -16,14 +19,23 @@ class HttpServerMixin:
 
             def _send_json(self, data, status=200):
                 body = json.dumps(data).encode("utf-8")
-                self.send_response(status)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-                self.send_header("Access-Control-Allow-Headers", "Content-Type, Accept")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                try:
+                    self.send_response(status)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+                    self.send_header("Access-Control-Allow-Headers", "Content-Type, Accept")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    self.wfile.flush()
+                    return True
+                except CLIENT_DISCONNECT_EXCEPTIONS:
+                    # El cliente cerró la conexión antes de leer la respuesta
+                    # (muy típico con polling de /status desde el navegador).
+                    # No es un error del backend: evitamos el traceback y, sobre
+                    # todo, no intentamos enviar otro JSON de error por el mismo socket.
+                    return False
 
             def _ok(self, data=None, status=200):
                 self._send_json({"ok": True, "data": data or {}}, status=status)
@@ -55,6 +67,8 @@ class HttpServerMixin:
                         self._ok(service.export_topology())
                     else:
                         self._error("Endpoint no encontrado", status=404)
+                except CLIENT_DISCONNECT_EXCEPTIONS:
+                    return
                 except Exception as e:
                     self._error(e, status=500)
 
@@ -79,6 +93,8 @@ class HttpServerMixin:
                         self._ok(service.ping_all())
                     else:
                         self._error("Endpoint no encontrado", status=404)
+                except CLIENT_DISCONNECT_EXCEPTIONS:
+                    return
                 except Exception as e:
                     self._error(e, status=400)
 
@@ -97,6 +113,8 @@ class HttpServerMixin:
                         self._ok(service.delete_link(body))
                     else:
                         self._error("Endpoint no encontrado", status=404)
+                except CLIENT_DISCONNECT_EXCEPTIONS:
+                    return
                 except Exception as e:
                     self._error(e, status=400)
 
