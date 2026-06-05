@@ -6,6 +6,7 @@ from rest_helpers import (
     success_response,
     read_json_body,
     require_fields,
+    require_api_key,
 )
 
 API_INSTANCE_NAME = "sdn_api_app"
@@ -16,10 +17,21 @@ class SDNRestController(ControllerBase):
         super(SDNRestController, self).__init__(req, link, data, **config)
         self.sdn_app = data[API_INSTANCE_NAME]
 
+    def _require_api_key(self, req):
+        try:
+            require_api_key(req)
+            return None
+        except PermissionError as e:
+            return error_response(e, status=401)
+
     @route("topology", "/api/topology", methods=["GET", "OPTIONS"])
     def get_topology(self, req, **kwargs):
         if req.method == "OPTIONS":
             return cors_preflight()
+
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
 
         try:
             body = self.sdn_app.topology_service.get_topology_data()
@@ -32,6 +44,10 @@ class SDNRestController(ControllerBase):
     def export_topology(self, req, **kwargs):
         if req.method == "OPTIONS":
             return cors_preflight()
+
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
 
         try:
             name = req.GET.get("name") if hasattr(req, "GET") else None
@@ -61,6 +77,10 @@ class SDNRestController(ControllerBase):
         if req.method == "OPTIONS":
             return cors_preflight()
 
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
+
         try:
             body = read_json_body(req)
             result = self.sdn_app.scenario_service.validate_import_payload(body)
@@ -74,6 +94,10 @@ class SDNRestController(ControllerBase):
         if req.method == "OPTIONS":
             return cors_preflight()
 
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
+
         try:
             body = read_json_body(req)
             result = self.sdn_app.scenario_service.import_topology_from_web(body)
@@ -86,6 +110,10 @@ class SDNRestController(ControllerBase):
     def reset_runtime_state(self, req, **kwargs):
         if req.method == "OPTIONS":
             return cors_preflight()
+
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
 
         try:
             body = read_json_body(req)
@@ -104,6 +132,10 @@ class SDNRestController(ControllerBase):
         if req.method == "OPTIONS":
             return cors_preflight()
 
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
+
         try:
             body = read_json_body(req)
             require_fields(body, "src", "dst")
@@ -118,6 +150,10 @@ class SDNRestController(ControllerBase):
     def enable_link(self, req, **kwargs):
         if req.method == "OPTIONS":
             return cors_preflight()
+
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
 
         try:
             body = read_json_body(req)
@@ -134,6 +170,10 @@ class SDNRestController(ControllerBase):
         if req.method == "OPTIONS":
             return cors_preflight()
 
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
+
         try:
             body = read_json_body(req)
             require_fields(body, "src", "dst", "loss")
@@ -148,6 +188,10 @@ class SDNRestController(ControllerBase):
     def set_link_bandwidth(self, req, **kwargs):
         if req.method == "OPTIONS":
             return cors_preflight()
+
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
 
         try:
             body = read_json_body(req)
@@ -164,6 +208,10 @@ class SDNRestController(ControllerBase):
         if req.method == "OPTIONS":
             return cors_preflight()
 
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
+
         try:
             body = read_json_body(req)
             require_fields(body, "src", "dst", "delay")
@@ -178,6 +226,10 @@ class SDNRestController(ControllerBase):
     def clear_link_tc(self, req, **kwargs):
         if req.method == "OPTIONS":
             return cors_preflight()
+
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
 
         try:
             body = read_json_body(req)
@@ -194,6 +246,10 @@ class SDNRestController(ControllerBase):
         if req.method == "OPTIONS":
             return cors_preflight()
 
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
+
         try:
             body = read_json_body(req)
             require_fields(body, "port", "loss")
@@ -208,6 +264,10 @@ class SDNRestController(ControllerBase):
     def set_port_bandwidth(self, req, **kwargs):
         if req.method == "OPTIONS":
             return cors_preflight()
+
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
 
         try:
             body = read_json_body(req)
@@ -224,6 +284,10 @@ class SDNRestController(ControllerBase):
         if req.method == "OPTIONS":
             return cors_preflight()
 
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
+
         try:
             body = read_json_body(req)
             require_fields(body, "port", "delay")
@@ -238,6 +302,10 @@ class SDNRestController(ControllerBase):
     def clear_port_tc(self, req, **kwargs):
         if req.method == "OPTIONS":
             return cors_preflight()
+
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
 
         try:
             body = read_json_body(req)
@@ -254,6 +322,10 @@ class SDNRestController(ControllerBase):
         if req.method == "OPTIONS":
             return cors_preflight()
 
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
+
         try:
             body = self.sdn_app.health_service.get_controller_status()
             return success_response(body)
@@ -265,6 +337,10 @@ class SDNRestController(ControllerBase):
     def get_health_metrics(self, req, **kwargs):
         if req.method == "OPTIONS":
             return cors_preflight()
+
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
 
         try:
             body = self.sdn_app.health_service.get_health_metrics()
@@ -278,6 +354,10 @@ class SDNRestController(ControllerBase):
         if req.method == "OPTIONS":
             return cors_preflight()
 
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
+
         try:
             body = self.sdn_app.health_service.get_health_summary()
             return success_response(body)
@@ -289,6 +369,10 @@ class SDNRestController(ControllerBase):
     def get_switch_ports(self, req, **kwargs):
         if req.method == "OPTIONS":
             return cors_preflight()
+
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
 
         try:
             dpid = kwargs["dpid"]
@@ -303,6 +387,10 @@ class SDNRestController(ControllerBase):
         if req.method == "OPTIONS":
             return cors_preflight()
 
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
+
         try:
             dpid = kwargs["dpid"]
             body = self.sdn_app.health_service.get_switch_flows(dpid)
@@ -315,6 +403,10 @@ class SDNRestController(ControllerBase):
     def traffic_block_ip(self, req, **kwargs):
         if req.method == "OPTIONS":
             return cors_preflight()
+
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
 
         try:
             body = read_json_body(req)
@@ -331,6 +423,10 @@ class SDNRestController(ControllerBase):
         if req.method == "OPTIONS":
             return cors_preflight()
 
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
+
         try:
             body = read_json_body(req)
             require_fields(body, "ip")
@@ -346,6 +442,10 @@ class SDNRestController(ControllerBase):
         if req.method == "OPTIONS":
             return cors_preflight()
 
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
+
         try:
             result = self.sdn_app.unblock_all_ip_traffic()
             return success_response(result)
@@ -358,6 +458,10 @@ class SDNRestController(ControllerBase):
         if req.method == "OPTIONS":
             return cors_preflight()
 
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
+
         try:
             return success_response(self.sdn_app.get_blocked_ips_status())
         except Exception as e:
@@ -368,6 +472,10 @@ class SDNRestController(ControllerBase):
     def traffic_ping(self, req, **kwargs):
         if req.method == "OPTIONS":
             return cors_preflight()
+
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
 
         try:
             body = read_json_body(req)
@@ -391,6 +499,10 @@ class SDNRestController(ControllerBase):
         if req.method == "OPTIONS":
             return cors_preflight()
 
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
+
         try:
             body = read_json_body(req)
 
@@ -409,6 +521,10 @@ class SDNRestController(ControllerBase):
         if req.method == "OPTIONS":
             return cors_preflight()
 
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
+
         try:
             return success_response(self.sdn_app.get_stp_status())
         except Exception as e:
@@ -419,6 +535,10 @@ class SDNRestController(ControllerBase):
     def traffic_iperf(self, req, **kwargs):
         if req.method == "OPTIONS":
             return cors_preflight()
+
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
 
         try:
             body = read_json_body(req)
@@ -443,6 +563,10 @@ class SDNRestController(ControllerBase):
         if req.method == "OPTIONS":
             return cors_preflight()
 
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
+
         try:
             body = read_json_body(req)
             require_fields(body, "dpid", "port_no")
@@ -461,6 +585,10 @@ class SDNRestController(ControllerBase):
     def enable_port(self, req, **kwargs):
         if req.method == "OPTIONS":
             return cors_preflight()
+
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
 
         try:
             body = read_json_body(req)
@@ -481,6 +609,10 @@ class SDNRestController(ControllerBase):
         if req.method == "OPTIONS":
             return cors_preflight()
 
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
+
         try:
             body = read_json_body(req)
             require_fields(body, "src", "dst")
@@ -499,6 +631,10 @@ class SDNRestController(ControllerBase):
         if req.method == "OPTIONS":
             return cors_preflight()
 
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
+
         try:
             body = read_json_body(req)
             result = self.sdn_app.attach_host_link(body)
@@ -512,6 +648,10 @@ class SDNRestController(ControllerBase):
         if req.method == "OPTIONS":
             return cors_preflight()
 
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
+
         try:
             body = read_json_body(req)
             result = self.sdn_app.detach_host_link(body)
@@ -524,6 +664,10 @@ class SDNRestController(ControllerBase):
     def forget_host(self, req, **kwargs):
         if req.method == "OPTIONS":
             return cors_preflight()
+
+        auth_error = self._require_api_key(req)
+        if auth_error:
+            return auth_error
 
         try:
             result = self.sdn_app.forget_host_by_mac(kwargs["mac"])

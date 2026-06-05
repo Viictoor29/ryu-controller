@@ -3,6 +3,24 @@ from webob import Response
 import json
 import subprocess
 import re
+import os
+import hmac
+
+
+API_KEY_HEADER = "X-API-Key"
+DEFAULT_NETWORK_API_KEY = "gestordered-tfg-network-api-key-2026"
+
+
+def get_network_api_key():
+    return os.environ.get("NETWORK_API_KEY", DEFAULT_NETWORK_API_KEY)
+
+
+def require_api_key(req):
+    expected_api_key = get_network_api_key()
+    received_api_key = req.headers.get(API_KEY_HEADER, "")
+
+    if not expected_api_key or not hmac.compare_digest(received_api_key, expected_api_key):
+        raise PermissionError("No autorizado")
 
 
 def json_response(data, status=200):
@@ -13,8 +31,8 @@ def json_response(data, status=200):
         body=json.dumps(data).encode("utf-8"),
         headers=[
             ("Access-Control-Allow-Origin", "*"),
-            ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
-            ("Access-Control-Allow-Headers", "Content-Type, Accept")
+            ("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS"),
+            ("Access-Control-Allow-Headers", "Content-Type, Accept, X-API-Key")
         ]
     )
 
@@ -24,8 +42,8 @@ def cors_preflight():
         status=200,
         headers=[
             ("Access-Control-Allow-Origin", "*"),
-            ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
-            ("Access-Control-Allow-Headers", "Content-Type, Accept"),
+            ("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS"),
+            ("Access-Control-Allow-Headers", "Content-Type, Accept, X-API-Key"),
             ("Content-Length", "0")
         ]
     )

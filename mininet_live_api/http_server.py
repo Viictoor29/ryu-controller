@@ -1,10 +1,14 @@
 import json
 import threading
+import os
+import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import urllib.parse
 
 
 CLIENT_DISCONNECT_EXCEPTIONS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
+API_KEY_HEADER = "X-API-Key"
+DEFAULT_NETWORK_API_KEY = "gestordered-tfg-network-api-key-2026"
 
 
 class HttpServerMixin:
@@ -24,7 +28,7 @@ class HttpServerMixin:
                     self.send_header("Content-Type", "application/json; charset=utf-8")
                     self.send_header("Access-Control-Allow-Origin", "*")
                     self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-                    self.send_header("Access-Control-Allow-Headers", "Content-Type, Accept")
+                    self.send_header("Access-Control-Allow-Headers", "Content-Type, Accept, X-API-Key")
                     self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
                     self.wfile.write(body)
@@ -52,6 +56,20 @@ class HttpServerMixin:
                     return {}
                 return json.loads(raw)
 
+            def _configured_api_key(self):
+                return os.environ.get("NETWORK_API_KEY", DEFAULT_NETWORK_API_KEY)
+
+            def _authorized(self):
+                expected_api_key = self._configured_api_key()
+                received_api_key = self.headers.get(API_KEY_HEADER, "")
+                return bool(expected_api_key) and hmac.compare_digest(received_api_key, expected_api_key)
+
+            def _require_api_key(self):
+                if not self._authorized():
+                    self._error("No autorizado", status=401)
+                    return False
+                return True
+
             def _path(self):
                 return urllib.parse.urlparse(self.path).path
 
@@ -60,6 +78,9 @@ class HttpServerMixin:
 
             def do_GET(self):
                 try:
+                    if not self._require_api_key():
+                        return
+
                     path = self._path()
                     if path == "/api/mininet/status":
                         self._ok(service.status())
@@ -74,6 +95,9 @@ class HttpServerMixin:
 
             def do_POST(self):
                 try:
+                    if not self._require_api_key():
+                        return
+
                     path = self._path()
                     body = self._body()
 
@@ -100,6 +124,9 @@ class HttpServerMixin:
 
             def do_DELETE(self):
                 try:
+                    if not self._require_api_key():
+                        return
+
                     path = self._path()
                     body = self._body()
 
