@@ -31,6 +31,7 @@ from stats_service import StatsService
 from health_service import HealthService
 from traffic_service import TrafficService
 from scenario_service import ScenarioService
+from rest_helpers import authenticated_headers
 
 
 class SDNControllerAPI(app_manager.RyuApp):
@@ -297,13 +298,13 @@ class SDNControllerAPI(app_manager.RyuApp):
     def topology_get_hosts(self):
         return get_host(self, None)
 
-    def call_mininet_pingall(self):
+    def call_mininet_pingall(self, api_key=None):
         payload = json.dumps({"timeout": 30}).encode("utf-8")
 
         req = urllib.request.Request(
             "http://127.0.0.1:8081/api/mininet/pingall",
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers=authenticated_headers({"Content-Type": "application/json"}, api_key=api_key),
             method="POST",
         )
 

@@ -6,6 +6,8 @@ import urllib.request
 
 from ryu.lib import hub
 
+from rest_helpers import authenticated_headers, get_network_api_key
+
 
 class ScenarioService:
     """
@@ -240,8 +242,9 @@ class ScenarioService:
             "scenario": scenario,
         }
 
-    def import_topology_from_web(self, payload):
+    def import_topology_from_web(self, payload, api_key=None):
         options = payload.get("options", {}) if isinstance(payload, dict) else {}
+        outbound_api_key = self._resolve_outbound_api_key(options, api_key)
         scenario = self.normalize_import_payload(payload)
         errors = self._validate_scenario(scenario)
         if errors:
@@ -269,7 +272,12 @@ class ScenarioService:
         }
 
         if apply_to_mininet:
-            result["mininet"] = self._post_json(mininet_url, scenario, timeout=timeout)
+            result["mininet"] = self._post_json(
+                mininet_url,
+                scenario,
+                timeout=timeout,
+                api_key=outbound_api_key,
+            )
         else:
             result["mininet"] = {
                 "skipped": True,
@@ -305,7 +313,7 @@ class ScenarioService:
             result["policies"] = self.apply_scenario_policies(scenario.get("policies", {}))
 
         if pingall:
-            result["pingall"] = self.app.call_mininet_pingall()
+            result["pingall"] = self.app.call_mininet_pingall(api_key=outbound_api_key)
 
         response_mode = str(options.get("response", "summary")).lower()
         if response_mode in ("full", "verbose", "debug"):
@@ -814,12 +822,24 @@ class ScenarioService:
         b = (str(dst_dpid), int(dst_port))
         return str(tuple(sorted([a, b])))
 
-    def _post_json(self, url, payload, timeout=40):
+    def _resolve_outbound_api_key(self, options, api_key=None):
+        if api_key:
+            return api_key
+        if isinstance(options, dict):
+            return (
+                options.get("api_key")
+                or options.get("network_api_key")
+                or options.get("mininet_api_key")
+                or get_network_api_key()
+            )
+        return get_network_api_key()
+
+    def _post_json(self, url, payload, timeout=40, api_key=None):
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             url,
             data=data,
-            headers={"Content-Type": "application/json"},
+            headers=authenticated_headers({"Content-Type": "application/json"}, api_key=api_key),
             method="POST",
         )
 

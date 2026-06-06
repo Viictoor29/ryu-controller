@@ -7,6 +7,7 @@ from rest_helpers import (
     read_json_body,
     require_fields,
     require_api_key,
+    API_KEY_HEADER,
 )
 
 API_INSTANCE_NAME = "sdn_api_app"
@@ -100,7 +101,10 @@ class SDNRestController(ControllerBase):
 
         try:
             body = read_json_body(req)
-            result = self.sdn_app.scenario_service.import_topology_from_web(body)
+            result = self.sdn_app.scenario_service.import_topology_from_web(
+                body,
+                api_key=req.headers.get(API_KEY_HEADER),
+            )
             return success_response(result)
         except Exception as e:
             self.sdn_app.logger.exception("Error en POST /api/topology/import: %s", e)

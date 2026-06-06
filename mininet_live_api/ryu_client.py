@@ -1,10 +1,25 @@
 import json
+import os
 import urllib.parse
 import urllib.request
 
 
+API_KEY_HEADER = "X-API-Key"
+DEFAULT_NETWORK_API_KEY = "gestordered-tfg-network-api-key-2026"
+
+
 class RyuClientMixin:
     """Cliente HTTP mínimo para notificar cambios al controlador Ryu."""
+
+    def configured_api_key(self):
+        return os.environ.get("NETWORK_API_KEY", DEFAULT_NETWORK_API_KEY)
+
+    def authenticated_headers(self, headers=None):
+        result = dict(headers or {})
+        api_key = self.configured_api_key()
+        if api_key:
+            result[API_KEY_HEADER] = api_key
+        return result
 
     def host_payload_from_node(self, host):
         ip = self.safe_host_ip(host)
@@ -39,7 +54,7 @@ class RyuClientMixin:
         req = urllib.request.Request(
             f"{self.ryu_api_url}{path}",
             data=data,
-            headers={"Content-Type": "application/json"},
+            headers=self.authenticated_headers({"Content-Type": "application/json"}),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
@@ -49,7 +64,11 @@ class RyuClientMixin:
             return body
 
     def get_ryu_json(self, path, timeout=2):
-        req = urllib.request.Request(f"{self.ryu_api_url}{path}", method="GET")
+        req = urllib.request.Request(
+            f"{self.ryu_api_url}{path}",
+            headers=self.authenticated_headers(),
+            method="GET",
+        )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8")
             if resp.status < 200 or resp.status >= 300:
@@ -136,7 +155,7 @@ class RyuClientMixin:
 
         safe_mac = urllib.parse.quote(str(mac).lower(), safe="")
         url = f"{self.ryu_api_url}/api/hosts/forget/{safe_mac}"
-        req = urllib.request.Request(url, method="DELETE")
+        req = urllib.request.Request(url, headers=self.authenticated_headers(), method="DELETE")
 
         with urllib.request.urlopen(req, timeout=5) as resp:
             body = resp.read().decode("utf-8")

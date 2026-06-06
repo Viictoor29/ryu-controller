@@ -15,6 +15,14 @@ def get_network_api_key():
     return os.environ.get("NETWORK_API_KEY", DEFAULT_NETWORK_API_KEY)
 
 
+def authenticated_headers(headers=None, api_key=None):
+    result = dict(headers or {})
+    network_api_key = api_key if api_key is not None else get_network_api_key()
+    if network_api_key:
+        result[API_KEY_HEADER] = network_api_key
+    return result
+
+
 def require_api_key(req):
     expected_api_key = get_network_api_key()
     received_api_key = req.headers.get(API_KEY_HEADER, "")
