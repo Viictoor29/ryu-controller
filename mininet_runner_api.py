@@ -93,8 +93,9 @@ def run():
             api.start()
 
         if not args.skip_pingall:
-            print("\n*** Ejecutando pingAll para descubrir hosts/IPs...\n")
+            #print("\n*** Ejecutando pingAll para descubrir hosts/IPs...\n")
             #net.pingAll()
+            next
 
         print("\n*** Red arrancada. Entrando en CLI de Mininet...\n")
         CLI(net)
