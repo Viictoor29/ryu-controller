@@ -35,10 +35,6 @@ class HttpServerMixin:
                     self.wfile.flush()
                     return True
                 except CLIENT_DISCONNECT_EXCEPTIONS:
-                    # El cliente cerró la conexión antes de leer la respuesta
-                    # (muy típico con polling de /status desde el navegador).
-                    # No es un error del backend: evitamos el traceback y, sobre
-                    # todo, no intentamos enviar otro JSON de error por el mismo socket.
                     return False
 
             def _ok(self, data=None, status=200):
