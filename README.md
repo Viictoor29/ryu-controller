@@ -402,6 +402,3 @@ sudo python3 mininet_runner_api.py \
 
 Para añadir nuevas rutas REST, modifica o amplía los servicios dentro de `sdn_api/` y registra la ruta correspondiente en `rest_routes.py`.
 
-## Licencia
-
-Este repositorio no especifica una licencia. Si el proyecto se va a compartir o reutilizar públicamente, se recomienda añadir un archivo `LICENSE`.
