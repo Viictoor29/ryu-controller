@@ -114,23 +114,37 @@ Limpia Mininet antes de empezar:
 sudo mn -c
 ```
 
-## Configuración de la clave de API
+Configuración de la clave de API
 
-Tanto la API Ryu como la API Mininet usan la cabecera `X-API-Key`.
+Tanto la API Ryu como la API Mininet usan autenticación mediante la cabecera X-API-Key.
 
-Para definir la clave de API:
+La clave de API se obtiene de la variable de entorno:
 
-```bash
-export NETWORK_API_KEY="cambia-esta-clave"
-```
+NETWORK_API_KEY
 
-Todas las peticiones protegidas deben incluir:
+Si no se define esa variable, el proyecto usa la clave por defecto:
 
-```bash
+gestordered-tfg-network-api-key-2026
+
+Por tanto, puedes configurar la clave así:
+
+export NETWORK_API_KEY="gestordered-tfg-network-api-key-2026"
+
+Todas las peticiones protegidas deben incluir la cabecera:
+
 -H "X-API-Key: $NETWORK_API_KEY"
-```
 
-Si no se define la variable `NETWORK_API_KEY`, el proyecto puede usar una clave por defecto definida en el código. Aun así, se recomienda definir una clave propia para evitar depender de valores fijos.
+Ejemplo usando la variable de entorno:
+
+curl -H "X-API-Key: $NETWORK_API_KEY" \
+  http://127.0.0.1:8080/api/topology
+
+También puedes escribir la clave directamente en la petición:
+
+curl -H "X-API-Key: gestordered-tfg-network-api-key-2026" \
+  http://127.0.0.1:8080/api/topology
+
+Para desarrollo local puede usarse la clave por defecto, pero en un entorno real se recomienda definir una clave propia mediante NETWORK_API_KEY.
 
 ## Ejecución
 
