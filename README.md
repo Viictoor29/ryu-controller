@@ -309,14 +309,14 @@ Ejemplo:
 
 ```bash
 curl -H "X-API-Key: $NETWORK_API_KEY" \
-  http://127.0.0.1:8080/api/switch/0000000000000001/ports
+  http://127.0.0.1:8080/api/switch/1/ports
 ```
 
 Consultar flujos:
 
 ```bash
 curl -H "X-API-Key: $NETWORK_API_KEY" \
-  http://127.0.0.1:8080/api/switch/0000000000000001/flows
+  http://127.0.0.1:8080/api/switch1/flows
 ```
 
 ### Endpoints de STP
