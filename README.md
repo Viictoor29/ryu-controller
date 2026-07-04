@@ -114,7 +114,7 @@ Limpia Mininet antes de empezar:
 sudo mn -c
 ```
 
-## Configuración de la clave de API
+## Configuración de la API Key
 
 Tanto la **API Ryu** como la **API Mininet** usan autenticación mediante la cabecera `X-API-Key`.
 
